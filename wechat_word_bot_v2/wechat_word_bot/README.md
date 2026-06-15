@@ -73,15 +73,17 @@ python main.py
 
 ## 收款与授权
 
-当前工程已加入本地购买拦截，默认分为两档：
+当前工程已加入本地购买拦截，默认分为两档，并约定只走 `xiaoxin` 后端的 `易支付(epay)`：
 
 - `5` 元：一次性购买，只开通当前版本。
 - `10` 元：长期更新，后续版本继续可用。
 
-参考 `yunkao` 的方式，购买入口会直接打开收款页或收款码。先在 [config.yaml](E:\AI\oneclass\wechat_word_bot_v2\wechat_word_bot\config.yaml) 的 `purchase.tiers` 里填好：
+根据你服务器里的实现，`xiaoxin` 还有 `vmq`、人工审核等分支，但这里已经收敛为只使用 `epay`。当前默认会跳到：
 
-- `payment_url`：你的收款页面地址，适合网页收银台。
-- `qr_image`：本地收款码图片路径，适合微信/支付宝二维码。
+- `https://zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=one_time`
+- `https://zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=lifetime_updates`
+
+购买页会自动带上本机生成的 `machine_id`，服务端会把 `档位 + 机器标识 + 联系方式` 记录下来，方便你后续手动开通授权。
 
 常用命令：
 

@@ -4,8 +4,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import argparse
+import hashlib
+import os
 import sys
 import webbrowser
+from urllib.parse import quote, urlencode
 
 from .config import ROOT, load_config, save_config
 
@@ -35,11 +38,85 @@ def tier_summary(cfg: dict[str, Any], tier: str) -> str:
     return f"{title} {format_price(price)} - {desc}".strip()
 
 
+def _join_url(base_url: str, path: str) -> str:
+    if not base_url:
+        return path
+    if not path:
+        return base_url
+    return base_url.rstrip("/") + "/" + path.lstrip("/")
+
+
+def get_machine_id() -> str:
+    raw = "|".join(
+        [
+            os.environ.get("COMPUTERNAME", ""),
+            os.environ.get("USERNAME", ""),
+            str(ROOT),
+        ]
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+    return f"oc-{digest}"
+
+
+def _append_machine_id(url: str) -> str:
+    if not url:
+        return url
+    separator = "&" if "?" in url else "?"
+    if "machine_id=" in url:
+        return url
+    return f"{url}{separator}{urlencode({'machine_id': get_machine_id()})}"
+
+
+def resolve_purchase_url(cfg: dict[str, Any], tier: str) -> str:
+    purchase_cfg = cfg.get("purchase") or {}
+    tiers = purchase_cfg.get("tiers") or {}
+    tier_cfg = tiers.get(tier) or {}
+
+    checkout_url = str(tier_cfg.get("checkout_url") or "").strip()
+    if checkout_url:
+        return checkout_url
+
+    provider = str(purchase_cfg.get("provider") or "local").strip().lower()
+    if provider == "xiaoxin":
+        xiaoxin_cfg = purchase_cfg.get("xiaoxin") or {}
+        base_url = str(xiaoxin_cfg.get("base_url") or "").strip()
+        product_path = str(tier_cfg.get("product_path") or "").strip()
+        checkout_path = str(tier_cfg.get("checkout_path") or "").strip()
+
+        if product_path:
+            return _append_machine_id(_join_url(base_url, product_path))
+        if checkout_path:
+            return _append_machine_id(_join_url(base_url, checkout_path))
+
+        template = str(xiaoxin_cfg.get("checkout_url_template") or "").strip()
+        if template:
+            title = str(tier_cfg.get("title") or TIER_LABELS.get(tier, tier))
+            return template.format(
+                base_url=base_url.rstrip("/"),
+                tier=tier,
+                title=quote(title),
+                price_cents=int(tier_cfg.get("price_cents") or 0),
+                price_yuan=f"{int(tier_cfg.get('price_cents') or 0) / 100:.2f}",
+            )
+
+    fallback = str(tier_cfg.get("payment_url") or "").strip()
+    if fallback:
+        return _append_machine_id(fallback)
+
+    if provider == "xiaoxin":
+        xiaoxin_cfg = purchase_cfg.get("xiaoxin") or {}
+        base_url = str(xiaoxin_cfg.get("base_url") or "").strip()
+        if base_url:
+            query = urlencode({"tier": tier, "machine_id": get_machine_id()})
+            return _join_url(base_url, "/api/oneclass/pay/buy") + "?" + query
+    return ""
+
+
 def open_purchase_target(cfg: dict[str, Any], tier: str) -> bool:
     purchase_cfg = cfg.get("purchase") or {}
     tiers = purchase_cfg.get("tiers") or {}
     tier_cfg = tiers.get(tier) or {}
-    url = str(tier_cfg.get("payment_url") or "").strip()
+    url = resolve_purchase_url(cfg, tier)
     image_value = str(tier_cfg.get("qr_image") or "").strip()
 
     if url:
@@ -60,10 +137,17 @@ def print_purchase_help(cfg: dict[str, Any]) -> None:
     purchase_cfg = cfg.get("purchase") or {}
     contact = str(purchase_cfg.get("contact") or "").strip()
     note = str(purchase_cfg.get("post_payment_note") or "").strip()
+    provider = str(purchase_cfg.get("provider") or "local").strip().lower()
 
     print("未授权，当前版本需要先购买后使用。")
     print(f"1. {tier_summary(cfg, 'one_time')}")
     print(f"2. {tier_summary(cfg, 'lifetime_updates')}")
+    if provider == "xiaoxin":
+        xiaoxin_cfg = purchase_cfg.get("xiaoxin") or {}
+        base_url = str(xiaoxin_cfg.get("base_url") or "").strip()
+        if base_url:
+            print(f"支付后端: xiaoxin 易支付 ({base_url})")
+            print(f"机器标识: {get_machine_id()}")
     if contact:
         print(f"付款后联系: {contact}")
     if note:
@@ -144,9 +228,14 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
         text="请选择购买方案",
         font=("Microsoft YaHei UI", 15, "bold"),
     ).pack(anchor="w")
+    provider = str(purchase_cfg.get("provider") or "local").strip().lower()
+    if provider == "xiaoxin":
+        guide_text = "当前已按 xiaoxin 后端的易支付方式接入，点击后直接打开对应商品页或支付页。"
+    else:
+        guide_text = "点击后直接打开对应易支付收款页。"
     tk.Label(
         container,
-        text="参考 yunkao 的方式，点击后直接打开对应收款页或收款码。",
+        text=guide_text,
         justify="left",
         wraplength=360,
     ).pack(anchor="w", pady=(8, 12))
@@ -158,7 +247,7 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
             if not open_purchase_target(cfg, selected_tier):
                 messagebox.showwarning(
                     "未配置收款地址",
-                    "请先在 config.yaml 的 purchase.tiers 下配置 payment_url 或 qr_image。",
+                    "请先在 config.yaml 中配置 checkout_url、xiaoxin 商品路径或 payment_url。",
                 )
 
         tk.Button(
@@ -172,6 +261,7 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
     extra_lines = []
     if contact:
         extra_lines.append(f"付款后联系: {contact}")
+    extra_lines.append(f"机器标识: {get_machine_id()}")
     if note:
         extra_lines.append(note)
     if extra_lines:

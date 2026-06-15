@@ -75,21 +75,29 @@ extra_group_retry_seconds: 3.0
 purchase:
   enabled: true
   require_license: true
+  provider: xiaoxin
   contact: '微信或QQ: 请填写你的联系方式'
-  post_payment_note: 付款后把付款截图和机器标识发给我，我手动开通授权。
+  post_payment_note: '当前只使用易支付。付款完成后，把购买信息和机器标识发给我，我来开通授权。'
+  xiaoxin:
+    base_url: 'https://zhouwu.ccwu.cc'
+    checkout_url_template: ''
   tiers:
     one_time:
       title: 一次性购买
       price_cents: 500
-      description: 当前版本可用，不含后续长期更新
+      description: 当前版本可用，使用易支付，不含后续长期更新
+      checkout_url: ''
+      product_path: '/api/oneclass/pay/buy?tier=one_time'
+      checkout_path: ''
       payment_url: ''
-      qr_image: ''
     lifetime_updates:
       title: 长期更新
       price_cents: 1000
-      description: 含后续更新支持
+      description: 含后续更新支持，使用易支付
+      checkout_url: ''
+      product_path: '/api/oneclass/pay/buy?tier=lifetime_updates'
+      checkout_path: ''
       payment_url: ''
-      qr_image: ''
 license:
   active: false
   tier: ''
