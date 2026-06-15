@@ -80,8 +80,8 @@ python main.py
 
 根据你服务器里的实现，`xiaoxin` 还有 `vmq`、人工审核等分支，但这里已经收敛为只使用 `epay`。当前默认会跳到：
 
-- `https://zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=one_time`
-- `https://zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=lifetime_updates`
+- `https://sylu.zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=one_time`
+- `https://sylu.zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=lifetime_updates`
 
 购买页会自动带上本机生成的 `machine_id`，服务端会把 `档位 + 机器标识 + 联系方式` 记录下来，方便你后续手动开通授权。
 

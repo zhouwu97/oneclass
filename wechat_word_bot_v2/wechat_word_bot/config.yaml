@@ -79,7 +79,7 @@ purchase:
   contact: '微信或QQ: 请填写你的联系方式'
   post_payment_note: '当前只使用易支付。付款完成后，把购买信息和机器标识发给我，我来开通授权。'
   xiaoxin:
-    base_url: 'https://zhouwu.ccwu.cc'
+    base_url: 'https://sylu.zhouwu.ccwu.cc'
     checkout_url_template: ''
   tiers:
     one_time:
