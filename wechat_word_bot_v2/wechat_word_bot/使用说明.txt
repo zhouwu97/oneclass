@@ -1,0 +1,5 @@
+1. 把 repair_config.py 和 enable_background_mode.py 复制到 wechat_word_bot 项目根目录。
+2. 在已激活 (.venv) 的 PowerShell 运行：
+   python repair_config.py
+   python main.py
+3. repair_config.py 会自动从损坏的 config.yaml 恢复 region，并备份旧配置为 config.yaml.bak。

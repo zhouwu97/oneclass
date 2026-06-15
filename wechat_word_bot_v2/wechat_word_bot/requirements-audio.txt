@@ -1,0 +1,4 @@
+-r requirements.txt
+SoundCard>=0.4.4,<1
+soundfile>=0.12,<1
+faster-whisper>=1.2,<2

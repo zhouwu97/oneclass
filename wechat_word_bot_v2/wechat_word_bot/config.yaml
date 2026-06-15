@@ -1,0 +1,98 @@
+region:
+- 1944
+- 75
+- 480
+- 1007
+input_backend: win32
+win32_fallback_to_pyautogui: false
+loop_interval: 0.65
+after_click_delay: 0.85
+ocr_scale: 1.6
+ocr_min_score: 0.45
+debug: true
+mark_too_easy: true
+dictation_mode: whisper
+fallback_on_audio_failure: reveal
+auto_next_group: true
+max_extra_groups: 0
+unknown_choice_strategy: unknown
+choice_match_threshold: 42
+whisper_model: small.en
+whisper_device: cpu
+whisper_compute_type: int8
+audio_sample_rate: 48000
+audio_record_seconds: 3.2
+audio_loopback_name: 扬声器 (Realtek(R) Audio)
+speech_match_threshold: 60
+fallback_points:
+  reveal_answer:
+  - 0.5
+  - 0.53
+  know:
+  - 0.5
+  - 0.805
+  next_word:
+  - 0.5
+  - 0.955
+  continue_words:
+  - 0.5
+  - 0.955
+  complete_confirm:
+  - 0.5
+  - 0.61
+  start_memorize:
+  - 0.5
+  - 0.95
+  timeout_next_group:
+  - 0.664583
+  - 0.559086
+  start_next_group:
+  - 0.5
+  - 0.95
+  speaker:
+  - 0.49375
+  - 0.27408
+  dictation_input:
+  - 0.48958
+  - 0.37934
+  dictation_confirm:
+  - 0.49167
+  - 0.45084
+  unknown:
+  - 0.5
+  - 0.975
+  test_question_finish:
+  - 0.5
+  - 0.975
+  test_result_finish:
+  - 0.74
+  - 0.958
+dictation_failure_strategy: dummy
+dictation_fallback_word: zzzz
+dictation_max_attempts: 2
+dictation_retry_delay: 0.65
+extra_group_retry_seconds: 3.0
+purchase:
+  enabled: true
+  require_license: true
+  contact: '微信或QQ: 请填写你的联系方式'
+  post_payment_note: 付款后把付款截图和机器标识发给我，我手动开通授权。
+  tiers:
+    one_time:
+      title: 一次性购买
+      price_cents: 500
+      description: 当前版本可用，不含后续长期更新
+      payment_url: ''
+      qr_image: ''
+    lifetime_updates:
+      title: 长期更新
+      price_cents: 1000
+      description: 含后续更新支持
+      payment_url: ''
+      qr_image: ''
+license:
+  active: false
+  tier: ''
+  owner: ''
+  activated_at: ''
+  note: ''
