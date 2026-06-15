@@ -16,6 +16,7 @@ from .config import ROOT, load_config, save_config
 TIER_LABELS = {
     "one_time": "一次性购买",
     "lifetime_updates": "长期更新",
+    "upgrade_updates": "补差升级长期更新",
 }
 
 
@@ -36,6 +37,16 @@ def tier_summary(cfg: dict[str, Any], tier: str) -> str:
     title = tier_cfg.get("title") or TIER_LABELS.get(tier, tier)
     desc = tier_cfg.get("description") or ""
     return f"{title} {format_price(price)} - {desc}".strip()
+
+
+def configured_purchase_tiers(cfg: dict[str, Any]) -> list[str]:
+    tiers = (cfg.get("purchase") or {}).get("tiers") or {}
+    order = ["one_time", "lifetime_updates", "upgrade_updates"]
+    result = [tier for tier in order if tier in tiers]
+    for tier in tiers:
+        if tier not in result:
+            result.append(tier)
+    return result
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -140,8 +151,8 @@ def print_purchase_help(cfg: dict[str, Any]) -> None:
     provider = str(purchase_cfg.get("provider") or "local").strip().lower()
 
     print("未授权，当前版本需要先购买后使用。")
-    print(f"1. {tier_summary(cfg, 'one_time')}")
-    print(f"2. {tier_summary(cfg, 'lifetime_updates')}")
+    for index, tier in enumerate(configured_purchase_tiers(cfg), start=1):
+        print(f"{index}. {tier_summary(cfg, tier)}")
     if provider == "xiaoxin":
         xiaoxin_cfg = purchase_cfg.get("xiaoxin") or {}
         base_url = str(xiaoxin_cfg.get("base_url") or "").strip()
@@ -240,7 +251,7 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
         wraplength=360,
     ).pack(anchor="w", pady=(8, 12))
 
-    for tier in ("one_time", "lifetime_updates"):
+    for tier in configured_purchase_tiers(cfg):
         summary = tier_summary(cfg, tier)
 
         def handler(selected_tier: str = tier) -> None:
@@ -287,7 +298,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     purchase_parser = subparsers.add_parser("purchase")
     purchase_parser.add_argument(
         "--tier",
-        choices=["one_time", "lifetime_updates"],
+        choices=["one_time", "lifetime_updates", "upgrade_updates"],
         help="直接打开某个购买方案",
     )
 

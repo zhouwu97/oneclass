@@ -75,13 +75,15 @@ python main.py
 
 当前工程已加入本地购买拦截，默认分为两档，并约定只走 `xiaoxin` 后端的 `易支付(epay)`：
 
-- `5` 元：一次性购买，只开通当前版本。
-- `10` 元：长期更新，后续版本继续可用。
+- `3` 元：一次性购买，只开通当前版本。
+- `8` 元：长期更新，后续版本继续可用。
+- `6` 元：补差升级长期更新，给已购买一次性版用户补差使用。
 
 根据你服务器里的实现，`xiaoxin` 还有 `vmq`、人工审核等分支，但这里已经收敛为只使用 `epay`。当前默认会跳到：
 
 - `https://sylu.zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=one_time`
 - `https://sylu.zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=lifetime_updates`
+- `https://sylu.zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=upgrade_updates`
 
 购买页会自动带上本机生成的 `machine_id`，服务端会把 `档位 + 机器标识 + 联系方式` 记录下来，方便你后续手动开通授权。
 
@@ -91,6 +93,7 @@ python main.py
 python main.py purchase
 python main.py purchase --tier one_time
 python main.py purchase --tier lifetime_updates
+python main.py purchase --tier upgrade_updates
 python main.py status
 python main.py activate --tier one_time --owner 张三
 ```

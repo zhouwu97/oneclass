@@ -84,7 +84,7 @@ purchase:
   tiers:
     one_time:
       title: 一次性购买
-      price_cents: 500
+      price_cents: 300
       description: 当前版本可用，使用易支付，不含后续长期更新
       checkout_url: ''
       product_path: '/api/oneclass/pay/buy?tier=one_time'
@@ -92,10 +92,18 @@ purchase:
       payment_url: ''
     lifetime_updates:
       title: 长期更新
-      price_cents: 1000
+      price_cents: 800
       description: 含后续更新支持，使用易支付
       checkout_url: ''
       product_path: '/api/oneclass/pay/buy?tier=lifetime_updates'
+      checkout_path: ''
+      payment_url: ''
+    upgrade_updates:
+      title: 补差升级长期更新
+      price_cents: 600
+      description: 已购买一次性版后，补差升级到长期更新
+      checkout_url: ''
+      product_path: '/api/oneclass/pay/buy?tier=upgrade_updates'
       checkout_path: ''
       payment_url: ''
 license:
