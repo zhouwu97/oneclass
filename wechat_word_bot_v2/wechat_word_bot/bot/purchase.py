@@ -10,12 +10,11 @@ import json
 import os
 import sys
 import webbrowser
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
-from urllib.request import Request, urlopen
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+import requests
 
 from .config import ROOT, load_config, save_config
 
@@ -195,19 +194,19 @@ def _read_json(
     }
     method = "GET"
     if payload is not None:
-        data = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
+        data = payload
         method = "POST"
     if jwt_token:
         headers["Authorization"] = f"Bearer {jwt_token}"
     if extra_headers:
         headers.update({k: v for k, v in extra_headers.items() if v})
-    request = Request(url, data=data, headers=headers, method=method)
     try:
-        with urlopen(request, timeout=12) as response:
-            raw = response.read().decode("utf-8")
-    except HTTPError as exc:
-        raw_error = exc.read().decode("utf-8", errors="ignore")
+        response = requests.request(method, url, json=data, headers=headers, timeout=12)
+        raw = response.text
+    except requests.RequestException as exc:
+        raise RuntimeError(f"网络请求失败：{exc}") from exc
+    if response.status_code >= 400:
+        raw_error = raw
         message = raw_error
         try:
             parsed_error = json.loads(raw_error or "{}")
@@ -215,7 +214,7 @@ def _read_json(
                 message = str(parsed_error.get("error") or raw_error)
         except Exception:
             pass
-        raise RuntimeError(f"HTTP {exc.code}: {message}") from exc
+        raise RuntimeError(f"HTTP {response.status_code}: {message}")
     parsed = json.loads(raw or "{}")
     if not isinstance(parsed, dict):
         raise ValueError("服务端返回格式不是 JSON 对象")
@@ -465,7 +464,7 @@ def check_pending_order(verbose: bool = False) -> bool:
 
     try:
         data = query_remote_order(cfg, order_no)
-    except (HTTPError, URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
+    except (requests.RequestException, TimeoutError, OSError, ValueError, RuntimeError) as exc:
         if verbose:
             print(f"检查待支付订单失败：{exc}")
         return False
@@ -716,7 +715,7 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
                 return
             if show_pending:
                 status_var.set(f"订单 {order_no} 仍未支付，付款后会自动激活。")
-        except (HTTPError, URLError, TimeoutError, OSError, ValueError, RuntimeError) as exc:
+        except (requests.RequestException, TimeoutError, OSError, ValueError, RuntimeError) as exc:
             if show_pending:
                 status_var.set(f"检查订单失败：{exc}")
         root.after(3000, poll_order_once)
