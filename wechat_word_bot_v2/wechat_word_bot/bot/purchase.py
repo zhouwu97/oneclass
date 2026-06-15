@@ -233,7 +233,9 @@ def create_remote_order(
         raise RuntimeError("未配置 xiaoxin 支付后端")
     jwt_token = jwt_token or os.environ.get("ONECLASS_LOGIN_JWT", "")
     if not jwt_token:
-        raise RuntimeError("请先从统一登录入口购买 OneClass 授权")
+        raise RuntimeError(
+            "请先打开融智云考（E:\\AI\\yunkao\\main.py）登录，进入“学习工具中心”后点击 OneClass 的“购买/同步授权”。"
+        )
     payload = {
         "tier": tier,
         "machine_id": get_machine_id(),
@@ -504,7 +506,7 @@ def print_purchase_help(cfg: dict[str, Any]) -> None:
     if note:
         print(note)
     print("可运行: python main.py purchase")
-    print("请从统一登录入口购买 OneClass 授权。")
+    print("请先打开 E:\\AI\\yunkao\\main.py 登录，再在“学习工具中心”里点击 OneClass 的“购买/同步授权”。")
 
 
 def ensure_license_or_exit(cfg: dict[str, Any]) -> bool:

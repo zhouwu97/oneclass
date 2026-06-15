@@ -8,3 +8,4 @@ rapidocr>=3.8,<4
 onnxruntime>=1.20,<2
 rapidfuzz>=3.9,<4
 pyperclip>=1.9,<2
+cryptography>=42,<46
