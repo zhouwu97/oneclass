@@ -4,6 +4,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -13,8 +14,15 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
 from .config import ROOT, load_config, save_config
 
+
+CLIENT_VERSION = "1.0.0"
+CLIENT_RELEASED_AT = "2026-06-15T00:00:00+08:00"
+ONECLASS_LICENSE_PUBLIC_KEY = "Fx4uhd5n7yeTzX-NE8XYZSV2PCnnAzJ3hvrBqjw_ZS4"
 
 TIER_LABELS = {
     "one_time": "一次性购买",
@@ -24,11 +32,81 @@ TIER_LABELS = {
 
 
 def license_is_active(cfg: dict[str, Any]) -> bool:
-    license_cfg = cfg.get("license") or {}
-    if not bool(license_cfg.get("active")) or license_cfg.get("tier") not in TIER_LABELS:
-        return False
-    machine_id = str(license_cfg.get("machine_id") or "").strip()
-    return not machine_id or machine_id == get_machine_id()
+    return get_license_status(cfg)["active"]
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
+
+
+def _parse_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def verify_license_token(token: str) -> dict[str, Any]:
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise ValueError("授权 token 格式无效")
+    signing_input = f"{parts[0]}.{parts[1]}".encode("ascii")
+    signature = _b64url_decode(parts[2])
+    public_key = Ed25519PublicKey.from_public_bytes(_b64url_decode(ONECLASS_LICENSE_PUBLIC_KEY))
+    try:
+        public_key.verify(signature, signing_input)
+    except InvalidSignature as exc:
+        raise ValueError("授权 token 签名无效") from exc
+    header = json.loads(_b64url_decode(parts[0]).decode("utf-8"))
+    payload = json.loads(_b64url_decode(parts[1]).decode("utf-8"))
+    if header.get("alg") != "EdDSA" or payload.get("typ") != "oneclass_license":
+        raise ValueError("授权 token 类型无效")
+    if payload.get("machine_id") != get_machine_id():
+        raise ValueError("授权 token 绑定的机器标识不是当前电脑")
+    if payload.get("tier") not in TIER_LABELS:
+        raise ValueError("授权 token 套餐无效")
+    updates_until = _parse_time(str(payload.get("updates_until") or ""))
+    released_at = _parse_time(CLIENT_RELEASED_AT)
+    if updates_until and released_at and released_at > updates_until:
+        raise ValueError("当前客户端发布日期晚于授权更新截止日期")
+    return payload
+
+
+def get_license_status(cfg: dict[str, Any]) -> dict[str, Any]:
+    token = str((cfg.get("license") or {}).get("token") or "").strip()
+    result: dict[str, Any] = {
+        "active": False,
+        "machine_id": get_machine_id(),
+        "client_version": CLIENT_VERSION,
+        "client_released_at": CLIENT_RELEASED_AT,
+        "reason": "未激活",
+    }
+    if not token:
+        return result
+    try:
+        payload = verify_license_token(token)
+    except Exception as exc:
+        result["reason"] = str(exc)
+        return result
+    result.update(
+        {
+            "active": True,
+            "reason": "",
+            "tier": payload.get("tier", ""),
+            "order_no": payload.get("order_no", ""),
+            "paid_at": payload.get("paid_at", ""),
+            "updates_until": payload.get("updates_until"),
+            "license_issued": payload.get("license_issued", ""),
+        }
+    )
+    return result
+
+
+def current_license_token(cfg: dict[str, Any]) -> str:
+    return str((cfg.get("license") or {}).get("token") or "").strip()
 
 
 def format_price(cents: int) -> str:
@@ -64,11 +142,22 @@ def _join_url(base_url: str, path: str) -> str:
 
 
 def get_machine_id() -> str:
-    raw = "|".join(
+    machine_guid = ""
+    if sys.platform == "win32":
+        try:
+            import winreg
+
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Cryptography",
+            ) as key:
+                machine_guid = str(winreg.QueryValueEx(key, "MachineGuid")[0] or "")
+        except Exception:
+            machine_guid = ""
+    raw = machine_guid or "|".join(
         [
             os.environ.get("COMPUTERNAME", ""),
             os.environ.get("USERNAME", ""),
-            str(ROOT),
         ]
     )
     digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -92,20 +181,41 @@ def _xiaoxin_base_url(cfg: dict[str, Any]) -> str:
     return str(xiaoxin_cfg.get("base_url") or "").strip().rstrip("/")
 
 
-def _read_json(url: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def _read_json(
+    url: str,
+    payload: dict[str, Any] | None = None,
+    jwt_token: str = "",
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     data = None
     headers = {
         "Accept": "application/json",
         "User-Agent": f"OneClass/{get_machine_id()}",
+        "X-OneClass-Client": "desktop",
     }
     method = "GET"
     if payload is not None:
         data = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
         method = "POST"
+    if jwt_token:
+        headers["Authorization"] = f"Bearer {jwt_token}"
+    if extra_headers:
+        headers.update({k: v for k, v in extra_headers.items() if v})
     request = Request(url, data=data, headers=headers, method=method)
-    with urlopen(request, timeout=12) as response:
-        raw = response.read().decode("utf-8")
+    try:
+        with urlopen(request, timeout=12) as response:
+            raw = response.read().decode("utf-8")
+    except HTTPError as exc:
+        raw_error = exc.read().decode("utf-8", errors="ignore")
+        message = raw_error
+        try:
+            parsed_error = json.loads(raw_error or "{}")
+            if isinstance(parsed_error, dict):
+                message = str(parsed_error.get("error") or raw_error)
+        except Exception:
+            pass
+        raise RuntimeError(f"HTTP {exc.code}: {message}") from exc
     parsed = json.loads(raw or "{}")
     if not isinstance(parsed, dict):
         raise ValueError("服务端返回格式不是 JSON 对象")
@@ -115,19 +225,21 @@ def _read_json(url: str, payload: dict[str, Any] | None = None) -> dict[str, Any
 def create_remote_order(
     cfg: dict[str, Any],
     tier: str,
-    pay_type: str = "alipay",
     contact: str = "",
+    jwt_token: str = "",
 ) -> dict[str, Any]:
     base_url = _xiaoxin_base_url(cfg)
     if not base_url:
         raise RuntimeError("未配置 xiaoxin 支付后端")
+    jwt_token = jwt_token or os.environ.get("ONECLASS_LOGIN_JWT", "")
+    if not jwt_token:
+        raise RuntimeError("请先从统一登录入口购买 OneClass 授权")
     payload = {
         "tier": tier,
-        "pay_type": pay_type if pay_type in {"alipay", "wechat"} else "alipay",
         "machine_id": get_machine_id(),
         "contact": contact.strip(),
     }
-    return _read_json(_join_url(base_url, "/api/oneclass/pay/create"), payload)
+    return _read_json(_join_url(base_url, "/api/oneclass/pay/create"), payload, jwt_token=jwt_token)
 
 
 def query_remote_order(cfg: dict[str, Any], order_no: str) -> dict[str, Any]:
@@ -136,6 +248,87 @@ def query_remote_order(cfg: dict[str, Any], order_no: str) -> dict[str, Any]:
         raise RuntimeError("未配置 xiaoxin 支付后端")
     query = urlencode({"order_no": order_no})
     return _read_json(_join_url(base_url, "/api/oneclass/pay/status") + "?" + query)
+
+
+def query_client_version(cfg: dict[str, Any]) -> dict[str, Any]:
+    base_url = _xiaoxin_base_url(cfg)
+    if not base_url:
+        return {}
+    token = current_license_token(cfg)
+    return _read_json(
+        _join_url(base_url, "/api/oneclass/client/version"),
+        extra_headers={
+            "X-OneClass-License": token,
+            "X-OneClass-Machine-ID": get_machine_id(),
+        },
+    )
+
+
+def _save_seen_notice(cfg: dict[str, Any], notice_id: str) -> None:
+    cfg.setdefault("license", {})
+    cfg["license"]["last_notice_id"] = notice_id
+    save_config(cfg)
+
+
+def _show_update_notice(title: str, lines: list[str]) -> None:
+    text = "\n".join(line for line in lines if line)
+    print(f"[OneClass 更新通知] {title}")
+    if text:
+        print(text)
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showinfo(title or "OneClass 更新通知", text or title)
+        root.destroy()
+    except Exception:
+        pass
+
+
+def maybe_handle_update_notice(cfg: dict[str, Any], data: dict[str, Any], verbose: bool = True) -> None:
+    notice = data.get("update_notice")
+    if not isinstance(notice, dict):
+        return
+    notice_id = str(notice.get("id") or "").strip()
+    if not notice_id:
+        return
+    seen_id = str((cfg.get("license") or {}).get("last_notice_id") or "").strip()
+    if seen_id == notice_id:
+        return
+    title = str(notice.get("title") or "OneClass 更新通知").strip()
+    lines = []
+    if notice.get("version"):
+        lines.append(f"版本：{notice['version']}")
+    if notice.get("content"):
+        lines.append(str(notice["content"]))
+    if notice.get("download_url"):
+        lines.append(f"下载地址：{notice['download_url']}")
+    _save_seen_notice(cfg, notice_id)
+    if verbose:
+        _show_update_notice(title, lines)
+
+
+def remote_version_allows_run(cfg: dict[str, Any], verbose: bool = True) -> bool:
+    try:
+        data = query_client_version(cfg)
+    except Exception as exc:
+        if verbose:
+            print(f"版本检查失败，暂时允许离线启动：{exc}")
+        return True
+    if not data:
+        return True
+    maybe_handle_update_notice(cfg, data, verbose=verbose)
+    if bool(data.get("force_update")):
+        if verbose:
+            print("当前 OneClass 客户端需要强制升级。")
+            if data.get("message"):
+                print(str(data["message"]))
+            if data.get("download_url"):
+                print(f"下载地址: {data['download_url']}")
+        return False
+    return True
 
 
 def _order_is_paid(data: dict[str, Any]) -> bool:
@@ -217,10 +410,10 @@ def open_purchase_target(cfg: dict[str, Any], tier: str) -> bool:
 def begin_remote_purchase(
     cfg: dict[str, Any],
     tier: str,
-    pay_type: str = "alipay",
     contact: str = "",
+    jwt_token: str = "",
 ) -> dict[str, Any]:
-    data = create_remote_order(cfg, tier, pay_type, contact)
+    data = create_remote_order(cfg, tier, contact, jwt_token)
     order = data.get("order") if isinstance(data.get("order"), dict) else {}
     order_no = str(data.get("order_no") or order.get("order_no") or "").strip()
     checkout_url = str(
@@ -280,7 +473,12 @@ def check_pending_order(verbose: bool = False) -> bool:
             print(f"待支付订单 {order_no} 当前状态：{data.get('status', 'unknown')}")
         return False
 
-    activate_from_paid_order(data, tier, order_no)
+    try:
+        activate_from_paid_order(data, tier, order_no)
+    except Exception as exc:
+        if verbose:
+            print(f"付款订单授权写入失败：{exc}")
+        return False
     if verbose:
         print("付款已确认，授权已自动写入 config.yaml。")
     return True
@@ -306,7 +504,7 @@ def print_purchase_help(cfg: dict[str, Any]) -> None:
     if note:
         print(note)
     print("可运行: python main.py purchase")
-    print("管理员可运行: python main.py activate --tier one_time --owner 用户名")
+    print("请从统一登录入口购买 OneClass 授权。")
 
 
 def ensure_license_or_exit(cfg: dict[str, Any]) -> bool:
@@ -316,8 +514,8 @@ def ensure_license_or_exit(cfg: dict[str, Any]) -> bool:
     if not purchase_cfg.get("require_license", True):
         return True
     if license_is_active(cfg):
-        return True
-    if check_pending_order():
+        return remote_version_allows_run(cfg)
+    if check_pending_order() and remote_version_allows_run(load_config()):
         return True
 
     print_purchase_help(cfg)
@@ -356,42 +554,59 @@ def activate_license(
 
 
 def activate_from_paid_order(data: dict[str, Any], fallback_tier: str, order_no: str) -> None:
-    remote_machine_id = str(data.get("machine_id") or "").strip()
-    current_machine_id = get_machine_id()
-    if remote_machine_id and remote_machine_id != current_machine_id:
-        raise RuntimeError("这笔订单绑定的机器标识不是当前电脑")
+    token = str(data.get("license_token") or "").strip()
+    if not token:
+        raise RuntimeError("服务端还没有返回授权 token，请稍后再试")
+    payload = verify_license_token(token)
     tier = _order_tier(data, fallback_tier)
     paid_at = str(data.get("paid_at") or "").strip()
-    activate_license(
-        tier=tier,
-        owner=current_machine_id,
-        note="支付成功后自动激活",
-        machine_id=current_machine_id,
-        order_no=order_no,
-        paid_at=paid_at,
+    cfg = load_config()
+    cfg.setdefault("license", {})
+    cfg["license"].update(
+        {
+            "token": token,
+            "tier": payload.get("tier") or tier,
+            "machine_id": payload.get("machine_id") or get_machine_id(),
+            "order_no": payload.get("order_no") or order_no,
+            "paid_at": payload.get("paid_at") or paid_at,
+            "updates_until": payload.get("updates_until"),
+            "license_issued": payload.get("license_issued", ""),
+            "activated_at": datetime.now().isoformat(timespec="seconds"),
+            "last_notice_id": "",
+            "note": "支付成功后自动激活",
+        }
     )
+    clear_pending_order(cfg)
+    save_config(cfg)
 
 
 def show_status(cfg: dict[str, Any]) -> None:
+    status = get_license_status(cfg)
     license_cfg = cfg.get("license") or {}
-    if not license_is_active(cfg):
+    if not status["active"]:
         print("授权状态: 未激活")
+        if status.get("reason"):
+            print(f"原因: {status['reason']}")
         print_purchase_help(cfg)
         return
-    tier = license_cfg.get("tier", "")
+    tier = status.get("tier", "")
     owner = license_cfg.get("owner", "")
     activated_at = license_cfg.get("activated_at", "")
     print(f"授权状态: 已激活 ({TIER_LABELS.get(tier, tier)})")
     if owner:
         print(f"授权对象: {owner}")
-    machine_id = license_cfg.get("machine_id", "")
+    machine_id = status.get("machine_id", "")
     if machine_id:
         print(f"机器标识: {machine_id}")
-    order_no = license_cfg.get("order_no", "")
+    order_no = status.get("order_no", "")
     if order_no:
         print(f"付款订单: {order_no}")
     if activated_at:
         print(f"激活时间: {activated_at}")
+
+
+def show_status_json(cfg: dict[str, Any]) -> None:
+    print(json.dumps(get_license_status(cfg), ensure_ascii=False))
 
 
 def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None) -> bool:
@@ -400,7 +615,15 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
         from tkinter import messagebox
     except Exception:
         if preferred_tier:
-            return open_purchase_target(cfg, preferred_tier)
+            try:
+                begin_remote_purchase(
+                    cfg,
+                    preferred_tier,
+                    jwt_token=os.environ.get("ONECLASS_LOGIN_JWT", ""),
+                )
+                return True
+            except Exception as exc:
+                print(f"无法创建购买订单：{exc}")
         return False
 
     purchase_cfg = cfg.get("purchase") or {}
@@ -417,7 +640,6 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
 
     status_var = tk.StringVar(value="")
     contact_var = tk.StringVar(value="")
-    pay_type_var = tk.StringVar(value="alipay")
     active_order: dict[str, str] = {}
 
     tk.Label(
@@ -425,14 +647,9 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
         text="请选择购买方案",
         font=("Microsoft YaHei UI", 15, "bold"),
     ).pack(anchor="w")
-    provider = str(purchase_cfg.get("provider") or "local").strip().lower()
-    if provider == "xiaoxin":
-        guide_text = "当前已按 xiaoxin 后端的易支付方式接入，点击后直接打开对应商品页或支付页。"
-    else:
-        guide_text = "点击后直接打开对应易支付收款页。"
     tk.Label(
         container,
-        text=guide_text + " 支付完成后本窗口会自动检查订单，并把授权绑定到当前机器标识。",
+        text="支付完成后本窗口会自动检查订单，并把 OneClass 授权绑定到当前机器标识。OneClass 授权与云考余额互不通用。",
         justify="left",
         wraplength=360,
     ).pack(anchor="w", pady=(8, 12))
@@ -441,8 +658,7 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
     form.pack(fill="x", pady=(0, 8))
     tk.Label(form, text="联系方式（可选）").grid(row=0, column=0, sticky="w")
     tk.Entry(form, textvariable=contact_var).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(2, 8))
-    tk.Radiobutton(form, text="支付宝", variable=pay_type_var, value="alipay").grid(row=2, column=0, sticky="w")
-    tk.Radiobutton(form, text="微信", variable=pay_type_var, value="wechat").grid(row=2, column=1, sticky="w")
+    tk.Label(form, text="支付方式：支付宝").grid(row=2, column=0, sticky="w")
     form.columnconfigure(0, weight=1)
     form.columnconfigure(1, weight=1)
 
@@ -451,8 +667,8 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
             order = begin_remote_purchase(
                 cfg,
                 selected_tier,
-                pay_type_var.get(),
                 contact_var.get(),
+                os.environ.get("ONECLASS_LOGIN_JWT", ""),
             )
             active_order.clear()
             active_order.update(
@@ -469,12 +685,17 @@ def show_purchase_window(cfg: dict[str, Any], preferred_tier: str | None = None)
             status_var.set(f"已创建订单 {order['order_no']}，请在打开的页面完成付款。")
             root.after(2500, poll_order_once)
         except Exception as exc:
-            if open_purchase_target(cfg, selected_tier):
+            if "统一登录" in str(exc) or "未登录" in str(exc) or "401" in str(exc):
+                messagebox.showwarning("需要登录", str(exc))
+                status_var.set(str(exc))
+                return
+            provider = str((cfg.get("purchase") or {}).get("provider") or "local").strip().lower()
+            if provider != "xiaoxin" and open_purchase_target(cfg, selected_tier):
                 status_var.set(f"自动创建订单失败，已打开备用购买页：{exc}")
                 return
             messagebox.showwarning(
-                "未配置收款地址",
-                f"请检查支付后端或 config.yaml 收款配置。\n\n{exc}",
+                "创建订单失败",
+                f"请检查网络、登录状态或支付后端配置。\n\n{exc}",
             )
 
     def poll_order_once(show_pending: bool = False) -> None:
@@ -558,6 +779,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=["one_time", "lifetime_updates", "upgrade_updates"],
         help="直接打开某个购买方案",
     )
+    purchase_parser.add_argument(
+        "--jwt-token",
+        default="",
+        help="统一登录 JWT，仅用于创建 OneClass 订单",
+    )
 
     activate_parser = subparsers.add_parser("activate")
     activate_parser.add_argument(
@@ -569,6 +795,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     activate_parser.add_argument("--note", default="")
 
     subparsers.add_parser("status")
+    subparsers.add_parser("status-json")
     subparsers.add_parser("sync-license")
     return parser
 
@@ -580,18 +807,24 @@ def handle_cli(args: argparse.Namespace) -> int | None:
 
     cfg = load_config()
     if command == "purchase":
+        if getattr(args, "jwt_token", ""):
+            os.environ["ONECLASS_LOGIN_JWT"] = args.jwt_token
         if not show_purchase_window(cfg, getattr(args, "tier", None)):
             print_purchase_help(cfg)
             return 1
         return 0
     if command == "activate":
-        activate_license(args.tier, args.owner, args.note, machine_id=get_machine_id())
-        print("授权已写入 config.yaml")
-        return 0
+        print("手工 activate 已停用：当前版本只接受服务端签发的 OneClass 授权 token。")
+        return 1
     if command == "status":
         check_pending_order(verbose=True)
         cfg = load_config()
         show_status(cfg)
+        return 0
+    if command == "status-json":
+        check_pending_order(verbose=False)
+        cfg = load_config()
+        show_status_json(cfg)
         return 0
     if command == "sync-license":
         if check_pending_order(verbose=True):

@@ -80,39 +80,31 @@ purchase:
   post_payment_note: '当前只使用易支付。付款完成后，客户端会自动按当前机器标识写入授权。'
   xiaoxin:
     base_url: 'https://sylu.zhouwu.ccwu.cc'
-    checkout_url_template: ''
   pending_order: {}
   tiers:
     one_time:
       title: 一次性购买
       price_cents: 300
       description: 当前版本可用，使用易支付，不含后续长期更新
-      checkout_url: ''
       product_path: '/api/oneclass/pay/buy?tier=one_time'
-      checkout_path: ''
-      payment_url: ''
     lifetime_updates:
       title: 长期更新
       price_cents: 800
       description: 含后续更新支持，使用易支付
-      checkout_url: ''
       product_path: '/api/oneclass/pay/buy?tier=lifetime_updates'
-      checkout_path: ''
-      payment_url: ''
     upgrade_updates:
       title: 补差升级长期更新
       price_cents: 600
       description: 已购买一次性版后，补差升级到长期更新
-      checkout_url: ''
       product_path: '/api/oneclass/pay/buy?tier=upgrade_updates'
-      checkout_path: ''
-      payment_url: ''
 license:
-  active: false
+  token: ''
   tier: ''
-  owner: ''
   machine_id: ''
   order_no: ''
   paid_at: ''
+  updates_until:
+  license_issued: ''
   activated_at: ''
+  last_notice_id: ''
   note: ''
