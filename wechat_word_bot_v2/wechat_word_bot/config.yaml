@@ -77,10 +77,11 @@ purchase:
   require_license: true
   provider: xiaoxin
   contact: '微信或QQ: 请填写你的联系方式'
-  post_payment_note: '当前只使用易支付。付款完成后，把购买信息和机器标识发给我，我来开通授权。'
+  post_payment_note: '当前只使用易支付。付款完成后，客户端会自动按当前机器标识写入授权。'
   xiaoxin:
     base_url: 'https://sylu.zhouwu.ccwu.cc'
     checkout_url_template: ''
+  pending_order: {}
   tiers:
     one_time:
       title: 一次性购买
@@ -110,5 +111,8 @@ license:
   active: false
   tier: ''
   owner: ''
+  machine_id: ''
+  order_no: ''
+  paid_at: ''
   activated_at: ''
   note: ''

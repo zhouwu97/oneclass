@@ -85,7 +85,9 @@ python main.py
 - `https://sylu.zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=lifetime_updates`
 - `https://sylu.zhouwu.ccwu.cc/api/oneclass/pay/buy?tier=upgrade_updates`
 
-购买页会自动带上本机生成的 `machine_id`，服务端会把 `档位 + 机器标识 + 联系方式` 记录下来，方便你后续手动开通授权。
+客户端会先向后端创建订单并带上本机生成的 `machine_id`，再打开支付页。付款完成后，购买窗口会自动轮询订单状态，并把 `档位 + 机器标识 + 订单号` 写入本地授权；授权只对当前机器标识有效。
+
+支付页通过易支付 MAPI 获取支付宝或微信的原生付款码。扫码后直接进入支付确认，不再先打开 `submit.php` 第三方网页进行二次跳转。
 
 常用命令：
 
@@ -95,8 +97,11 @@ python main.py purchase --tier one_time
 python main.py purchase --tier lifetime_updates
 python main.py purchase --tier upgrade_updates
 python main.py status
+python main.py sync-license
 python main.py activate --tier one_time --owner 张三
 ```
+
+如果付款后误关了购买窗口，再运行 `python main.py` 或 `python main.py sync-license`，程序会检查上一次创建的待支付订单；订单已付款就会补写本地授权。
 
 紧急停止：把鼠标迅速移到整个屏幕左上角，或在控制台按 `Ctrl+C`。
 
