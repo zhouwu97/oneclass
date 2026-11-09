@@ -2,7 +2,7 @@
 
 设计原则：
 1. 本地模式为基础核心：不填写任何 API 即可完整离线背单词与听写（通过本地 OCR + 本地 Whisper）。
-2. 云端 API 纯属可选扩展：用于语音 API 毫秒级极速听写或长篇阅读大题（段落匹配/选词填空）的视觉作答。
+2. 云端 API 为可选扩展：用于兼容语音识别接口或阅读大题视觉作答。
 3. 答题速度三档控制（快 / 均衡 / 准），自由调节节奏与重听策略。
 4. 提供多模型厂商一键切换、API 连通性探测、动态拉取模型列表与实时运行日志。
 """
@@ -14,6 +14,7 @@ from bot.windows_dpi import enable_dpi_awareness
 enable_dpi_awareness()
 
 import logging
+import copy
 import os
 import queue
 import threading
@@ -23,16 +24,36 @@ from tkinter import ttk
 from typing import Any
 
 from bot.config import ROOT, load_config, save_config
+from bot.logging_utils import file_log_handler
 
 
 LOCAL_MODELS = [
-    "distil-large-v3",
     "small.en",
     "base.en",
     "tiny.en",
+    "distil-large-v3",
     "medium.en",
     "large-v3",
 ]
+
+MODEL_GUIDE = {
+    "tiny.en": ("39M · 英语专用 · 资源占用最低", "启动和 CPU 推理通常最快，适合先检查声音链路、低配置电脑。", "生词、相近发音和噪声下更容易出错；速度优先时试用。"),
+    "base.en": ("74M · 英语专用 · 轻量", "比 tiny 更能兼顾识别与速度，适合希望缩短 CPU 每题耗时的用户。", "复杂发音的识别能力通常弱于 small；建议先用几道题比较。"),
+    "small.en": ("244M · 英语专用 · 日常听写推荐", "清晰英语单词的准确性与 CPU 速度较均衡，适合作为默认起点。", "通常比 base 慢、比 medium 轻；当前目标是提速，可先试 base.en。"),
+    "distil-large-v3": ("约 756M · 英语蒸馏模型 · 更适合 GPU", "保留较强英语识别能力，相对完整 large-v3 减少推理计算。", "仍明显大于 small/base；没有可用 GPU 时未必更快，不作为 CPU 提速首选。"),
+    "medium.en": ("769M · 英语专用 · 准确性优先", "适合 small 对口音、生词识别不够可靠时尝试。", "内存与计算需求更高，CPU 上每题通常更慢；建议搭配 GPU。"),
+    "large-v3": ("约 1.55B · 多语言 · 资源需求最高", "适合多语言或较复杂音频，提供更强的通用识别能力。", "下载、加载、内存与推理成本较高；单词听写提速通常不优先选它。"),
+}
+
+
+def model_guidance(model: str, backend: str = "local") -> str:
+    if backend == "api":
+        return (f"{model} · 云端语音识别\n优点：减少本机计算，无需加载本地模型。\n取舍：需要兼容语音接口，速度、费用和准确率取决于服务商与网络；音频会发往配置的服务端。")
+    guide = MODEL_GUIDE.get(model)
+    if guide is None:
+        return f"{model} · 自定义本地模型\n请确认模型路径、语言和硬件要求；实际速度以识别耗时日志为准。"
+    title, benefit, tradeoff = guide
+    return f"{title}\n优点：{benefit}\n取舍：{tradeoff}"
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "阿里云百炼 (通义千问 / 推荐)": {
@@ -46,7 +67,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         ],
         "default_vision": "qwen-vl-max-latest",
         "default_asr": "whisper-1",
-        "note": "国内首选，长篇阅读/段落匹配准确率最高，响应极快。",
+        "note": "提供视觉模型；请确认所选模型支持图片输入，语音接口需单独确认。",
     },
     "硅基流动 (SiliconFlow)": {
         "base_url": "https://api.siliconflow.cn/v1",
@@ -122,12 +143,56 @@ PROVIDERS: dict[str, dict[str, Any]] = {
 }
 
 SPEED_DESC = {
-    "fast": "录音 2.0 秒、单候选解码、只尝试一次：每题最快，长单词偶尔被截断。",
-    "balanced": "录音 2.4 秒、单候选解码、失败重听一次：速度与正确率的折中（默认推荐）。",
-    "accurate": "录音 3.2 秒、5 候选解码、最多重听三次：最稳，但每题用时较长。",
+    "fast": "录音上限 2.0 秒，发音结束即停；单候选解码，最多尝试 1 次。",
+    "balanced": "录音上限 2.4 秒，发音结束即停；清晰单词只解码一次，失败可重听 1 次。",
+    "accurate": "录音上限 3.2 秒，发音结束即停；5 候选解码，最多尝试 3 次。",
 }
 
 LOG = logging.getLogger("wordbot")
+
+QUICKSTART = """第一次使用
+
+1. 安装依赖
+在项目目录运行 pip install -r requirements.txt
+听写还需 pip install -r requirements-audio.txt
+本地模型首次使用可能需要下载；下载完成后可离线识别。
+
+2. 校准小程序
+在界面最上方点击「扫描窗口」，选择 OneClass，再点击「预览并确认定位」。确认预览显示完整小程序后，点击「确认，使用这个窗口」，启动按钮才会开放。
+移动窗口时会自动跟随位置。改变窗口大小、关闭或最小化会停止运行，需要重新定位。小程序仍须完整可见，不能被其他窗口遮挡。
+听写点击不准时，可用 python calibrate_dictation_points.py 单独校准喇叭、输入框和确定按钮。命令行模式仍可用 python calibrate.py。
+
+模型怎么选
+tiny.en：最轻，适合低配置和声音测试，准确性取舍最大。
+base.en：CPU 提速优先，适合清晰英语发音。
+small.en：日常英语听写的均衡起点，本机已附带该模型。
+distil-large-v3：相对完整 large 更省计算，更适合 GPU；CPU 上未必更快。
+medium.en：准确性优先，内存和计算需求更高。
+large-v3：多语言和复杂音频，资源需求最高，单词听写提速不优先选。
+选择模型后会显示优点和取舍，具体速度以本机日志为准。
+
+3. 设置听力
+答题方式选 whisper，选择本地模型或兼容语音 API。
+点击「刷新设备」，选择微信实际播放声音的扬声器或耳机。此项只选择监听设备，不会切换 Windows 的声音输出。
+点击「试录 3 秒」后，手动播放小程序声音；再点「试听最近录音」。建议佩戴耳机，避免其他声音干扰。
+
+4. 开始学习
+保存配置，保持小程序可见，点击「启动机器人」。
+切换速度会应用录音时长、候选数和重听次数；旧的高级覆盖值会清除。运行中的设置在下次启动生效。
+
+停止与排查
+点击「停止」后等待当前录音、模型或网络请求结束；停止后不会继续提交听写答案。
+没有录到声音：检查微信音量、Windows 应用输出设备与当前监听设备是否一致，再刷新设备并试录。
+听得到但识别不准：选「准档」，保留双次解码校验，确认单词发音未被截断。
+播放按钮没反应：勾选「前台点击喇叭」并重新校准。
+reveal 会点击「我不会」，会被记为错题；dummy 会提交占位词。请按需要选择。
+
+日志与阅读题
+警告为黄色，错误为红色；取消自动滚动可查看历史日志。
+wordbot.log 最多保留当前文件和 3 份轮转备份，每份约 5 MB。
+阅读题需要支持图片输入的兼容 API；模型列表能拉取不代表支持语音或图片。阅读自动提交默认关闭。
+音频 API 的耗时取决于网络与服务商；并非所有厂商支持 /audio/transcriptions。
+"""
 
 
 class TkLogHandler(logging.Handler):
@@ -137,7 +202,9 @@ class TkLogHandler(logging.Handler):
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
-            self.sink.put(self.format(record))
+            self.sink.put_nowait((record.levelname, self.format(record)))
+        except queue.Full:
+            pass
         except Exception:  # noqa: BLE001
             self.handleError(record)
 
@@ -148,8 +215,13 @@ class App:
         self.bot = None
         self.thread: threading.Thread | None = None
         self.fetch_thread: threading.Thread | None = None
-        self.log_queue: queue.Queue = queue.Queue()
+        self.log_queue: queue.Queue = queue.Queue(maxsize=2000)
         self.ui_queue: queue.Queue = queue.Queue()
+        self.stop_pending = threading.Event()
+        self.audio_thread = None
+        self.device_choices = {"跟随系统默认输出": ""}
+        self.located_window = None
+        self.window_choices = {}
 
         api = self.cfg.get("api") or {}
         exercise = self.cfg.get("exercise") or {}
@@ -159,11 +231,33 @@ class App:
         self.root.title("OneClass 背单词 · 设置与运行")
         self.root.geometry("1180x760")
         self.root.minsize(980, 640)
+        self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self.root.configure(background="#f3f5f9")
+        style = ttk.Style(self.root)
+        style.theme_use("clam")
+        style.configure(".", font=("Microsoft YaHei UI", 10))
+        style.configure("TFrame", background="#f3f5f9")
+        style.configure("TLabel", background="#f3f5f9")
+        style.configure("TLabelframe", background="#f3f5f9")
+        style.configure("TLabelframe.Label", background="#f3f5f9", foreground="#23456b")
+        style.configure("TButton", padding=(10, 6))
+        style.configure("TRadiobutton", wraplength=480)
+        style.configure("TCheckbutton", wraplength=480)
+        style.configure("TRadiobutton", background="#f3f5f9")
+        style.configure("TCheckbutton", background="#f3f5f9")
+        style.configure("TCombobox", fieldbackground="white")
+        style.configure("Accent.TButton", foreground="white", background="#2463bd")
+        self.var_device = tk.StringVar(value=str(self.cfg.get("audio_loopback_name", "")) or "跟随系统默认输出")
+        self.var_mode = tk.StringVar(value=str(self.cfg.get("dictation_mode", "whisper")))
+        self.var_speaker_click = tk.BooleanVar(value=bool(self.cfg.get("speaker_foreground_click", False)))
+        self.var_verify = tk.BooleanVar(value=bool(self.cfg.get("whisper_verify_pass", True)))
+        self.var_follow_log = tk.BooleanVar(value=True)
+        self.var_window = tk.StringVar(value="请先扫描 OneClass 小程序窗口")
 
         # 变量初始化
         self.var_speed = tk.StringVar(value=str(self.cfg.get("speed_preset", "balanced")))
         self.var_asr = tk.StringVar(value=str(self.cfg.get("asr_backend", "local")))
-        self.var_whisper = tk.StringVar(value=str(self.cfg.get("whisper_model", "distil-large-v3")))
+        self.var_whisper = tk.StringVar(value=str(self.cfg.get("whisper_model", "small.en")))
         self.var_asr_model = tk.StringVar(value=str(self.cfg.get("asr_api_model", "whisper-1")))
 
         # 探测当前厂商
@@ -186,10 +280,17 @@ class App:
         self.var_autosubmit = tk.BooleanVar(value=bool(exercise.get("auto_submit", False)))
 
         self._build()
+        for variable in (self.var_whisper, self.var_asr_model, self.var_asr):
+            variable.trace_add("write", lambda *_: self._refresh_model_guide())
+        self._refresh_model_guide()
         self._refresh_note()
         self.root.after(80, self._drain_ui)
 
     def _build(self) -> None:
+        header = ttk.Frame(self.root, padding=(20, 14))
+        header.pack(fill="x")
+        ttk.Label(header, text="OneClass · 学习助手", font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(header, text="定位窗口 → 预览确认 → 配置听力 → 开始学习", foreground="#607089").pack(anchor="w", pady=(4, 0))
         # 底部运行模式说明卡片
         self.note = tk.Label(
             self.root,
@@ -214,22 +315,29 @@ class App:
         # 左侧设置面板（带滚动条）
         left = ttk.Frame(body)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
-        canvas = tk.Canvas(left, highlightthickness=0)
+        canvas = tk.Canvas(left, highlightthickness=0, background="#f3f5f9")
         scroll = ttk.Scrollbar(left, orient="vertical", command=canvas.yview)
         self.panel = ttk.Frame(canvas)
         self.panel.bind(
             "<Configure>",
             lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
         )
-        canvas.create_window((0, 0), window=self.panel, anchor="nw")
+        panel_window = canvas.create_window((0, 0), window=self.panel, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(panel_window, width=e.width))
+        def wheel(event):
+            if event.widget.winfo_toplevel() == self.root and str(event.widget).startswith(str(left)):
+                canvas.yview_scroll(int(-event.delta / 120), "units")
+        self.root.bind("<MouseWheel>", wheel, add="+")
         canvas.configure(yscrollcommand=scroll.set)
         canvas.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self.panel.columnconfigure(1, weight=1)
 
         # 设置模块：核心基础优先，API 选配在后
+        self._section_window()
         self._section_speed()
         self._section_asr()
+        self._section_audio()
         self._section_api()
         self._section_exercise()
 
@@ -244,7 +352,7 @@ class App:
         ttk.Button(buttons, text="💾 保存配置", command=lambda: self.save()).pack(
             side="left", padx=(0, 6)
         )
-        self.btn_start = ttk.Button(buttons, text="🚀 启动机器人", command=self.start)
+        self.btn_start = ttk.Button(buttons, text="启动机器人", command=self.start, style="Accent.TButton", state="disabled")
         self.btn_start.pack(side="left", padx=(0, 6))
         self.btn_stop = ttk.Button(
             buttons, text="⏹ 停止", command=self.stop, state="disabled"
@@ -254,13 +362,133 @@ class App:
         self.status = ttk.Label(right, text="未运行", foreground="#555555", font=("Microsoft YaHei", 9))
         self.status.grid(row=1, column=0, sticky="w", pady=(6, 4))
 
-        self.log_text = tk.Text(
-            right, wrap="word", state="disabled", font=("Consolas", 9), background="#fafafa"
-        )
-        self.log_text.grid(row=2, column=0, sticky="nsew")
-        log_scroll = ttk.Scrollbar(right, orient="vertical", command=self.log_text.yview)
-        log_scroll.grid(row=2, column=1, sticky="ns")
+        notebook = ttk.Notebook(right)
+        notebook.grid(row=2, column=0, sticky="nsew")
+        logs = ttk.Frame(notebook, padding=8)
+        help_tab = ttk.Frame(notebook, padding=8)
+        notebook.add(logs, text="运行日志")
+        notebook.add(help_tab, text="使用教程")
+        logs.rowconfigure(1, weight=1)
+        logs.columnconfigure(0, weight=1)
+        tools = ttk.Frame(logs)
+        tools.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Checkbutton(tools, text="自动滚动", variable=self.var_follow_log).pack(side="left")
+        ttk.Button(tools, text="清空", command=self._clear_logs).pack(side="right")
+        ttk.Button(tools, text="打开日志目录", command=lambda: os.startfile(str(ROOT))).pack(side="right")
+        self.log_text = tk.Text(logs, width=1, wrap="word", state="disabled", font=("Consolas", 10), background="#ffffff", relief="flat", padx=10, pady=10)
+        self.log_text.grid(row=1, column=0, sticky="nsew")
+        for level, color in (("INFO", "#334155"), ("WARNING", "#a56708"), ("ERROR", "#c52f3b"), ("CRITICAL", "#c52f3b")):
+            self.log_text.tag_configure(level, foreground=color)
+        log_scroll = ttk.Scrollbar(logs, orient="vertical", command=self.log_text.yview)
+        log_scroll.grid(row=1, column=1, sticky="ns")
         self.log_text.configure(yscrollcommand=log_scroll.set)
+        from tkinter.scrolledtext import ScrolledText
+        help_text = ScrolledText(help_tab, width=1, wrap="word", font=("Microsoft YaHei UI", 10), relief="flat", padx=12, pady=12)
+        help_text.pack(fill="both", expand=True)
+        help_text.insert("1.0", QUICKSTART)
+        help_text.configure(state="disabled")
+        # Wheel events over a readonly combo should scroll the settings panel,
+        # rather than silently switching a model/device before the root bind.
+        def bind_combo_wheel(parent):
+            for child in parent.winfo_children():
+                if isinstance(child, ttk.Combobox):
+                    def scroll_combo(event):
+                        canvas.yview_scroll(int(-event.delta / 120), "units")
+                        return "break"
+                    child.bind("<MouseWheel>", scroll_combo)
+                bind_combo_wheel(child)
+        bind_combo_wheel(self.panel)
+
+    def _section_window(self) -> None:
+        box = ttk.LabelFrame(self.panel, text="第一步 · 定位小程序窗口（启动前必须确认）", padding=10)
+        box.pack(fill="x", pady=(0, 8))
+        box.columnconfigure(1, weight=1)
+        self.window_box = ttk.Combobox(box, textvariable=self.var_window, state="readonly", width=32)
+        self._row(box, "目标窗口", self.window_box)
+        self.window_box.bind("<<ComboboxSelected>>", lambda _: self._invalidate_location())
+        buttons = ttk.Frame(box)
+        buttons.grid(row=1, column=0, columnspan=2, sticky="w", pady=6)
+        ttk.Button(buttons, text="1. 扫描窗口", command=self.refresh_windows).pack(side="left", padx=(0, 6))
+        ttk.Button(buttons, text="2. 预览并确认定位", command=self.preview_window).pack(side="left")
+        self.location_status = ttk.Label(box, text="请打开电脑版微信里的 OneClass，保持小程序完整可见，再扫描窗口。旧截图坐标不会直接用于启动。", foreground="#a56708", wraplength=480)
+        self.location_status.grid(row=2, column=0, columnspan=2, sticky="w")
+        self.root.after(200, self.refresh_windows)
+
+    def _invalidate_location(self) -> None:
+        self.located_window = None
+        self.btn_start.configure(state="disabled")
+        self.location_status.configure(text="窗口选择已改变，请预览并确认定位。", foreground="#a56708")
+
+    def refresh_windows(self) -> None:
+        if self.thread and self.thread.is_alive():
+            self.location_status.configure(text="请先停止机器人，再重新定位窗口。")
+            return
+        from bot.window_target import discover_windows
+        targets = discover_windows()
+        self._invalidate_location()
+        self.window_choices = {f"{t.title} · {t.region[2]}×{t.region[3]} · 窗口 {t.handle}": t for t in targets}
+        self.window_box.configure(values=list(self.window_choices))
+        if len(targets) == 1:
+            self.var_window.set(next(iter(self.window_choices)))
+            self.location_status.configure(text="找到 OneClass。点击「预览并确认定位」，确认画面完整后才能启动。")
+        else:
+            self.var_window.set("请选择窗口" if targets else "未找到可用的 OneClass 窗口")
+            self.location_status.configure(text="请选择对应窗口并预览。" if targets else "未找到窗口：请打开 OneClass 小程序并取消最小化，再扫描。")
+
+    def preview_window(self) -> None:
+        if self.thread and self.thread.is_alive():
+            self.location_status.configure(text="请先停止机器人，再重新定位窗口。")
+            return
+        target = self.window_choices.get(self.var_window.get())
+        if target is None:
+            self.location_status.configure(text="请先扫描并选择 OneClass 窗口。")
+            return
+        self._invalidate_location()
+        from bot.window_target import client_region
+        from bot.screen import Screen
+        from PIL import ImageTk
+        try:
+            region = client_region(target.handle)
+            screen = Screen(region)
+            try:
+                preview = screen.capture()
+            finally:
+                screen.close()
+        except Exception as exc:
+            self.location_status.configure(text=f"无法预览：{exc}")
+            return
+        popup = tk.Toplevel(self.root)
+        popup.title("确认 OneClass 定位范围")
+        popup.transient(self.root)
+        popup.geometry(f"+{self.root.winfo_rootx() + 40}+{max(0, self.root.winfo_rooty() + 20)}")
+        popup.grab_set()
+        frame = ttk.Frame(popup, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="确认下方画面完整、没有被其他窗口遮挡。", wraplength=360).pack(pady=(0, 6))
+        preview.thumbnail((360, 650))
+        picture = ImageTk.PhotoImage(preview)
+        label = ttk.Label(frame, image=picture)
+        label.image = picture
+        label.pack()
+        ttk.Label(frame, text=f"物理像素范围：{region}", wraplength=360).pack(pady=6)
+        ttk.Button(frame, text="确认，使用这个窗口", style="Accent.TButton", command=lambda: self._confirm_window(target, popup)).pack(fill="x")
+        ttk.Button(frame, text="取消，重新选择", command=popup.destroy).pack(fill="x", pady=(6, 0))
+
+    def _confirm_window(self, target, popup) -> None:
+        from bot.window_target import client_region
+        try:
+            region = client_region(target.handle)
+        except RuntimeError as exc:
+            self.location_status.configure(text=str(exc))
+            popup.destroy()
+            return
+        self.located_window = target
+        self.cfg["region"] = region
+        self.cfg["_window_handle"] = target.handle
+        self.location_status.configure(text=f"已定位：{region[2]}×{region[3]}，位置 ({region[0]}, {region[1]})。运行时跟随窗口移动；关闭或最小化会停止。", foreground="#23804a")
+        self.btn_start.configure(state="normal")
+        self.status.configure(text="窗口已定位，可以配置听力并启动")
+        popup.destroy()
 
     def _row(self, parent: ttk.Frame, label: str, widget: tk.Widget) -> None:
         row_idx = parent.grid_size()[1]
@@ -273,9 +501,9 @@ class App:
         box = ttk.LabelFrame(self.panel, text="1. 答题速度（控制录音与重听策略）", padding=8)
         box.pack(fill="x", pady=(0, 8))
         for value, text in (
-            ("fast", "快档（极速，录音 2.0s，单候选，适合熟词）"),
-            ("balanced", "均衡档（默认推荐，录音 2.4s，重听 1 次，稳快兼顾）"),
-            ("accurate", "准档（高置信度，录音 3.2s，重听 3 次，适合听音不准场景）"),
+            ("fast", "快档：录音上限 2.0s，最多尝试 1 次"),
+            ("balanced", "均衡档：录音上限 2.4s，失败可重听 1 次"),
+            ("accurate", "准档：录音上限 3.2s，失败可重听 2 次"),
         ):
             ttk.Radiobutton(
                 box, text=text, value=value, variable=self.var_speed,
@@ -291,7 +519,7 @@ class App:
 
         ttk.Radiobutton(
             box,
-            text="本地 Whisper（推荐 · 纯本地 CPU 推理 · 离线免费 · 无需任何 API）",
+            text="本地 Whisper（无需 API · 可用 GPU 时自动加速）",
             value="local",
             variable=self.var_asr,
             command=self._refresh_note,
@@ -299,7 +527,7 @@ class App:
 
         ttk.Radiobutton(
             box,
-            text="语音识别 API（云端 GPU 加速 · 识别极快 · 需在下方配置 API Key）",
+            text="语音识别 API（减少本机计算 · 需配置兼容语音接口）",
             value="api",
             variable=self.var_asr,
             command=self._refresh_note,
@@ -317,12 +545,15 @@ class App:
             width=24,
         )
         self._row(box, "API 语音模型", self.asr_model_box)
+        self.model_guide = ttk.Label(box, text="", foreground="#23456b", wraplength=480, justify="left", padding=(8, 8))
+        self.model_guide.grid(row=box.grid_size()[1], column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        ttk.Label(box, text="怎么选：CPU 速度优先选 base.en；日常均衡选 small.en；有 GPU 再尝试 distil-large-v3。", wraplength=480, foreground="#607089").grid(row=box.grid_size()[1], column=0, columnspan=2, sticky="w", pady=(4, 4))
         self._sync_asr_state()
         self.var_asr.trace_add("write", lambda *_: self._sync_asr_state())
 
         tip = ttk.Label(
             box,
-            text="说明：本地 Whisper 完全离线运行，无需 API Key、不花钱；语音 API 经由服务端 GPU 识别更迅速。两者仅为答题速度差异，日常背单词不填 API 即可畅玩。",
+            text="本地模式无需 API Key，模型首次使用可能下载，之后可离线运行。清晰单词优先单次解码；云端速度取决于网络与服务商。",
             foreground="#666666",
             wraplength=480,
         )
@@ -332,6 +563,125 @@ class App:
         local = self.var_asr.get() == "local"
         self.whisper_box.configure(state="readonly" if local else "disabled")
         self.asr_model_box.configure(state="normal" if not local else "disabled")
+
+    def _refresh_model_guide(self) -> None:
+        backend = self.var_asr.get()
+        model = self.var_whisper.get() if backend == "local" else self.var_asr_model.get()
+        self.model_guide.configure(text=model_guidance(model, backend))
+        if self.cfg.get("whisper_model_path") and backend == "local":
+            self.model_guide.configure(text=self.model_guide.cget("text") + "\n当前配置了 whisper_model_path；实际优先加载该路径中的模型。")
+        self._refresh_note()
+
+    def _section_audio(self) -> None:
+        box = ttk.LabelFrame(self.panel, text="声音监听与播放检查", padding=10)
+        box.pack(fill="x", pady=(0, 8))
+        box.columnconfigure(1, weight=1)
+        self._row(box, "答题方式", ttk.Combobox(box, textvariable=self.var_mode, values=["whisper", "reveal", "dummy"], state="readonly"))
+        self.device_box = ttk.Combobox(box, textvariable=self.var_device, values=list(self.device_choices), state="readonly")
+        self._row(box, "监听的输出设备", self.device_box)
+        ttk.Checkbutton(box, text="前台点击喇叭（播放无响应时启用）", variable=self.var_speaker_click).grid(row=2, column=0, columnspan=2, sticky="w")
+        ttk.Checkbutton(box, text="低置信度时复核解码（清晰单词直接通过）", variable=self.var_verify).grid(row=3, column=0, columnspan=2, sticky="w")
+        buttons = ttk.Frame(box)
+        buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=6)
+        self.audio_buttons = []
+        for label, command in (("刷新设备", self.refresh_devices), ("试录 3 秒", self.test_audio), ("试听最近录音", self.play_audio), ("停止试听", self.stop_playback)):
+            btn = ttk.Button(buttons, text=label, command=command)
+            btn.pack(side="left", padx=(0, 4))
+            self.audio_buttons.append(btn)
+        self.audio_status = ttk.Label(box, text="选择微信实际使用的输出设备；试录时请手动播放声音。", wraplength=480, foreground="#607089")
+        self.audio_status.grid(row=5, column=0, columnspan=2, sticky="w")
+
+    def _audio_job(self, task) -> None:
+        if (self.thread and self.thread.is_alive()) or (self.audio_thread and self.audio_thread.is_alive()):
+            self.audio_status.configure(text="请先停止机器人或等待当前声音检查结束。")
+            return
+        for btn in self.audio_buttons:
+            btn.configure(state="disabled")
+        self.btn_start.configure(state="disabled")
+        def worker():
+            try:
+                task()
+            except Exception as exc:
+                message = f"声音检查失败：{exc}"
+                self.ui_queue.put(lambda message=message: self.audio_status.configure(text=message))
+            finally:
+                self.ui_queue.put(self._audio_done)
+        self.audio_thread = threading.Thread(target=worker, daemon=True)
+        self.audio_thread.start()
+
+    def _audio_done(self) -> None:
+        for btn in self.audio_buttons:
+            btn.configure(state="normal")
+        self.btn_start.configure(state="normal" if self.located_window else "disabled")
+
+    def refresh_devices(self) -> None:
+        def task():
+            from bot.audio_backend import soundcard_session
+            choices = {"跟随系统默认输出": ""}
+            with soundcard_session() as sc:
+                for mic in sc.all_microphones(include_loopback=True):
+                    if getattr(mic, "isloopback", False):
+                        choices[f"{mic.name} · {mic.id}"] = str(mic.id)
+            self.ui_queue.put(lambda: self._devices_ready(choices))
+        self._audio_job(task)
+
+    def _devices_ready(self, choices) -> None:
+        selected = self.device_choices.get(self.var_device.get(), self.var_device.get())
+        self.device_choices = choices
+        self.device_box.configure(values=list(choices))
+        label = next((label for label, value in choices.items() if value == selected), None)
+        if label is not None:
+            self.var_device.set(label)
+        self.audio_status.configure(text=f"找到 {len(choices) - 1} 个回环输出设备。" + ("原设备不在列表中，请重新选择。" if label is None else ""))
+
+    def test_audio(self) -> None:
+        cfg = copy.deepcopy(self.cfg)
+        cfg["audio_loopback_name"] = self.device_choices.get(self.var_device.get(), self.var_device.get())
+        cfg["audio_record_seconds"] = 3.0
+        cfg["audio_min_rms"] = 0.0
+        cfg["audio_test_mode"] = True
+        self.audio_status.configure(text="正在准备录音，请现在手动播放小程序声音（约 3 秒）。")
+        self._audio_job(lambda: self._record_test(cfg))
+
+    def _record_test(self, cfg) -> None:
+        from bot.audio_solver import AudioSolver
+        solver = AudioSolver(cfg, ROOT / "logs")
+        solver.record_after_click(lambda: None)
+        message = f"试录完成，原始音量 RMS={solver.last_recording_rms:.6f}。点击试听确认；接近 0 表示无声音。"
+        self.ui_queue.put(lambda: self.audio_status.configure(text=message))
+
+    def play_audio(self) -> None:
+        if self.thread and self.thread.is_alive():
+            self.audio_status.configure(text="请先停止机器人再试听，避免录入回放声音。")
+            return
+        import winsound
+        path = ROOT / "logs" / "last_dictation.wav"
+        if not path.exists():
+            self.audio_status.configure(text="还没有录音，请先试录。")
+            return
+        try:
+            winsound.PlaySound(str(path), winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT)
+            self.audio_status.configure(text="正在通过 Windows 默认输出试听最近录音。")
+        except RuntimeError as exc:
+            self.audio_status.configure(text=f"无法播放录音：{exc}")
+
+    def stop_playback(self) -> None:
+        import winsound
+        winsound.PlaySound(None, 0)
+
+    def _clear_logs(self) -> None:
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+
+    def _close(self) -> None:
+        if (self.thread and self.thread.is_alive()) or (self.audio_thread and self.audio_thread.is_alive()):
+            self.stop()
+            self.status.configure(text="正在结束任务，请稍后关闭窗口…")
+            self.root.after(250, self._close)
+            return
+        self.stop_playback()
+        self.root.destroy()
 
     def _section_api(self) -> None:
         box = ttk.LabelFrame(self.panel, text="3. AI 云端模型与 API 设置（可选 · 用于语音 API 加速与阅读大题）", padding=10)
@@ -483,7 +833,7 @@ class App:
                 model_ids = sorted(list(dict.fromkeys(model_ids)), key=vision_rank)
                 self.ui_queue.put(lambda: self._on_fetch_success(model_ids))
             except Exception as exc:  # noqa: BLE001
-                self.ui_queue.put(lambda: self._on_fetch_failed(str(exc)))
+                self.ui_queue.put(lambda error=str(exc): self._on_fetch_failed(error))
 
         self.fetch_thread = threading.Thread(target=worker, daemon=True)
         self.fetch_thread.start()
@@ -569,7 +919,7 @@ class App:
             lines.append("🚀 当前运行模式：云端 API 加速模式")
             lines.append(f"✓ 模型厂商：{p_name}")
             if asr_mode == "api":
-                lines.append(f"✓ 听写题：语音识别 API (模型: {self.var_asr_model.get()})，GPU 毫秒级返回。")
+                lines.append(f"✓ 听写题：语音识别 API (模型: {self.var_asr_model.get()})，耗时以运行日志为准。")
             else:
                 lines.append(f"✓ 听写题：本地 Whisper (模型: {self.var_whisper.get()}) 离线推理。")
             if self.var_api_enabled.get():
@@ -581,8 +931,16 @@ class App:
         self.note.configure(text="\n".join(lines))
         self.speed_desc.configure(text=speed_text)
 
-    def save(self, silent: bool = False) -> None:
+    def save(self, silent: bool = False) -> bool:
+        if self.var_speed.get() != self.cfg.get("speed_preset", "balanced"):
+            from bot.config import SPEED_OVERRIDES
+            for key in SPEED_OVERRIDES.values():
+                self.cfg.pop(key, None)
         self.cfg["speed_preset"] = self.var_speed.get()
+        self.cfg["dictation_mode"] = self.var_mode.get()
+        self.cfg["audio_loopback_name"] = self.device_choices.get(self.var_device.get(), self.var_device.get())
+        self.cfg["speaker_foreground_click"] = self.var_speaker_click.get()
+        self.cfg["whisper_verify_pass"] = self.var_verify.get()
         self.cfg["asr_backend"] = self.var_asr.get()
         self.cfg["whisper_model"] = self.var_whisper.get()
         self.cfg["asr_api_model"] = self.var_asr_model.get()
@@ -594,7 +952,7 @@ class App:
                 "provider": self.var_provider.get(),
                 "base_url": self.var_base.get().strip(),
                 "model": self.var_vmodel.get().strip(),
-                "api_key": self.var_key.get().strip(),
+                "api_key": self.var_key.get().strip() if self.var_key.get().strip() != os.environ.get(str(api.get("api_key_env") or "ONECLASS_API_KEY"), "") else "",
             }
         )
         self.cfg["api"] = api
@@ -603,16 +961,35 @@ class App:
         exercise["auto_submit"] = bool(self.var_autosubmit.get())
         self.cfg["exercise"] = exercise
 
-        save_config(self.cfg)
+        try:
+            save_config(self.cfg)
+        except OSError as exc:
+            self.status.configure(text=f"保存失败：{exc}")
+            return False
         self._refresh_note()
         if not silent:
             self.status.configure(text="配置已成功保存到 config.yaml")
+        return True
 
     def start(self) -> None:
         if self.thread and self.thread.is_alive():
             self.status.configure(text="机器人已在运行中")
             return
-        self.save(silent=True)
+        if self.located_window is None:
+            self.status.configure(text="请先在第一步预览并确认 OneClass 窗口")
+            return
+        from bot.window_target import client_region
+        try:
+            self.cfg["region"] = client_region(self.located_window.handle)
+        except RuntimeError as exc:
+            self._invalidate_location()
+            self.status.configure(text=str(exc))
+            return
+        if not self.save(silent=True):
+            return
+        self.stop_playback()
+        self.stop_pending.clear()
+        self.run_cfg = copy.deepcopy(self.cfg)
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.status.configure(text="启动中：加载 OCR / 语音组件…")
@@ -625,39 +1002,45 @@ class App:
         root_logger = logging.getLogger()
         root_logger.setLevel(logging.INFO)
         root_logger.addHandler(handler)
-        file_handler = logging.FileHandler(ROOT / "wordbot.log", encoding="utf-8")
-        file_handler.setFormatter(
-            logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-        )
+        file_handler = file_log_handler(ROOT)
         root_logger.addHandler(file_handler)
         try:
             from bot.controller import WordBot
 
-            self.bot = WordBot(self.cfg, Path(ROOT))
-            self.bot.run()
+            LOG.info("启动配置：%s | 听写=%s | 引擎=%s | 速度=%s", ROOT / "config.yaml", self.run_cfg.get("dictation_mode"), self.run_cfg.get("asr_backend"), self.run_cfg.get("speed_preset"))
+            self.bot = WordBot(self.run_cfg, Path(ROOT))
+            if self.stop_pending.is_set():
+                self.bot.stop()
+            else:
+                self.ui_queue.put(lambda: self.status.configure(text="运行中 · 配置修改将在下次启动生效"))
+                self.bot.run()
         except SystemExit as exc:
             LOG.info("机器人已正常结束（code=%s）", exc.code)
         except Exception:  # noqa: BLE001
             LOG.exception("机器人异常退出")
         finally:
+            if self.bot is not None:
+                self.bot.screen.close()
             root_logger.removeHandler(handler)
             root_logger.removeHandler(file_handler)
             try:
                 file_handler.close()
             except Exception:
                 pass
-            self.root.after(0, self._on_bot_exit)
+            self.ui_queue.put(self._on_bot_exit)
 
     def _on_bot_exit(self) -> None:
-        self.btn_start.configure(state="normal")
+        self.btn_start.configure(state="normal" if self.located_window else "disabled")
         self.btn_stop.configure(state="disabled")
         self.status.configure(text="已停止")
         self.bot = None
 
     def stop(self) -> None:
+        self.stop_pending.set()
+        self.btn_stop.configure(state="disabled")
+        self.status.configure(text="正在停止，等待当前操作结束…")
         if self.bot:
             self.bot.stop()
-            self.status.configure(text="正在停止…")
 
     def _drain_ui(self) -> None:
         while True:
@@ -667,21 +1050,23 @@ class App:
             except queue.Empty:
                 break
             except Exception:  # noqa: BLE001
-                pass
+                LOG.exception("界面更新失败")
         self._drain_logs()
         self.root.after(80, self._drain_ui)
 
     def _drain_logs(self) -> None:
         chunks = []
-        while True:
+        for _ in range(200):
             try:
                 chunks.append(self.log_queue.get_nowait())
             except queue.Empty:
                 break
         if chunks:
             self.log_text.configure(state="normal")
-            self.log_text.insert("end", "\n".join(chunks) + "\n")
-            self.log_text.see("end")
+            for level, message in chunks:
+                self.log_text.insert("end", message + "\n", level)
+            if self.var_follow_log.get():
+                self.log_text.see("end")
             if int(self.log_text.index("end-1c").split(".")[0]) > 1200:
                 self.log_text.delete("1.0", "400.0")
             self.log_text.configure(state="disabled")

@@ -219,6 +219,10 @@ __marimo__/
 
 # Project runtime artifacts
 wordbot.log
+wordbot.log.*
 logs/
 calibration_preview.png
 *.bak
+
+# Downloaded local speech models
+build_local_models/

@@ -116,12 +116,15 @@ class Screen:
         after_click_delay: float = 0.8,
         input_backend: str = "win32",
         win32_fallback_to_pyautogui: bool = True,
+        allow_foreground_mouse: bool = False,
     ):
         self.region = Region(*map(int, region))
         self.after_click_delay = float(after_click_delay)
         self.input_backend = str(input_backend).lower().strip()
         self.win32_fallback_to_pyautogui = bool(win32_fallback_to_pyautogui)
+        self.allow_foreground_mouse = bool(allow_foreground_mouse)
         self.background: Win32BackgroundInput | None = None
+        self._sct = None
 
         pyautogui.FAILSAFE = True
         pyautogui.PAUSE = 0.05
@@ -141,20 +144,52 @@ class Screen:
             raise ValueError("input_backend 只能是 win32 或 pyautogui")
 
     def capture(self) -> Image.Image:
+        self._refresh_bound_region()
         monitor = {
             "left": self.region.left,
             "top": self.region.top,
             "width": self.region.width,
             "height": self.region.height,
         }
-        with mss.mss() as sct:
-            shot = sct.grab(monitor)
-            return Image.frombytes("RGB", shot.size, shot.rgb)
+        if self._sct is None:
+            self._sct = mss.mss()
+        try:
+            shot = self._sct.grab(monitor)
+        except Exception:
+            self.close()
+            self._sct = mss.mss()
+            shot = self._sct.grab(monitor)
+        return Image.frombytes("RGB", shot.size, shot.rgb)
+
+    def close(self) -> None:
+        if self._sct is None:
+            return
+        close = getattr(self._sct, "close", None)
+        if callable(close):
+            close()
+        self._sct = None
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def absolute(self, x: float, y: float) -> tuple[int, int]:
+        self._refresh_bound_region()
         return self.region.left + round(x), self.region.top + round(y)
 
+    def _refresh_bound_region(self) -> None:
+        handle = getattr(self, "bound_window", None)
+        if handle:
+            from .window_target import client_region
+            updated = Region(*client_region(handle))
+            if (updated.width, updated.height) != (self.region.width, self.region.height):
+                raise RuntimeError("小程序窗口尺寸已改变，请重新预览并确认定位")
+            self.region = updated
+
     def relative(self, nx: float, ny: float) -> tuple[int, int]:
+        self._refresh_bound_region()
         return self.absolute(nx * self.region.width, ny * self.region.height)
 
     def _click_screen(self, screen_x: int, screen_y: int) -> None:
@@ -210,9 +245,16 @@ class Screen:
         nx: float,
         ny: float,
         delay: float = 0.20,
+        use_foreground: bool | None = None,
     ) -> None:
         """短暂使用真实鼠标点击 WebView 控件，随后恢复鼠标和焦点。"""
         screen_x, screen_y = self.relative(nx, ny)
+        if use_foreground is None:
+            use_foreground = self.allow_foreground_mouse
+        if not use_foreground:
+            self._click_screen(screen_x, screen_y)
+            time.sleep(delay)
+            return
         old_pos = pyautogui.position()
         old_hwnd = None
         if hasattr(ctypes, "windll"):
@@ -234,10 +276,23 @@ class Screen:
         confirm_x: float,
         confirm_y: float,
         delay: float | None = None,
+        use_foreground: bool | None = None,
     ) -> None:
         """真实点击输入框、粘贴文字并点击确定，然后恢复用户状态。"""
         input_screen = self.absolute(input_x, input_y)
         confirm_screen = self.absolute(confirm_x, confirm_y)
+        if use_foreground is None:
+            use_foreground = self.allow_foreground_mouse
+        if not use_foreground:
+            self.replace_text_rel(
+                input_x / self.region.width,
+                input_y / self.region.height,
+                text,
+                delay=0.08,
+            )
+            self._click_screen(*confirm_screen)
+            time.sleep(self.after_click_delay if delay is None else delay)
+            return
         old_pos = pyautogui.position()
         old_hwnd = None
         old_clipboard: str | None = None
@@ -253,12 +308,11 @@ class Screen:
                 old_clipboard = None
 
             pyautogui.click(*input_screen)
-            time.sleep(0.25)
+            time.sleep(0.08)
             pyautogui.hotkey("ctrl", "a")
-            pyautogui.press("backspace")
             pyperclip.copy(text)
             pyautogui.hotkey("ctrl", "v")
-            time.sleep(0.30)
+            time.sleep(0.08)
             pyautogui.click(*confirm_screen)
             time.sleep(self.after_click_delay if delay is None else delay)
         finally:

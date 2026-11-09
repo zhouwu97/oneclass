@@ -63,11 +63,11 @@ class TestVocab(unittest.TestCase):
     def test_vocab_crud(self):
         store = VocabStore(self.path)
         self.assertEqual(store.words(), [])
-        
+
         self.assertTrue(store.add("abandon", "放弃"))
         self.assertEqual(store.definition("abandon"), "放弃")
         self.assertEqual(store.definition("Abandon"), "放弃")
-        
+
         self.assertTrue(store.add("abandon", "放弃；抛弃"))
         self.assertEqual(store.definition("abandon"), "放弃；抛弃")
 
@@ -175,7 +175,7 @@ class TestAudioSolver(unittest.TestCase):
             with patch("requests.post") as mock_post:
                 mock_post.return_value.status_code = 200
                 mock_post.return_value.json.return_value = {"text": "apple"}
-                
+
                 tmp_wav = Path(tempfile.gettempdir()) / "test.wav"
                 tmp_wav.write_bytes(b"dummy")
                 try:

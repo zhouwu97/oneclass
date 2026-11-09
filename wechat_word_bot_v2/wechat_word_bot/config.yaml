@@ -1,12 +1,12 @@
 region:
-- 1944
-- 75
-- 480
-- 1007
+- 1937
+- 73
+- 474
+- 1031
 input_backend: win32
 win32_fallback_to_pyautogui: false
-loop_interval: 0.65
-ocr_scale: 1.6
+loop_interval: 0.45
+ocr_scale: 1.45
 ocr_min_score: 0.45
 debug: true
 mark_too_easy: true
@@ -19,12 +19,12 @@ choice_match_threshold: 42
 speed_preset: balanced
 asr_backend: local
 asr_api_model: whisper-1
-whisper_model: distil-large-v3
+whisper_model: small.en
 whisper_device: cpu
 whisper_compute_type: int8
 whisper_vad: true
 audio_sample_rate: 48000
-audio_loopback_name: ''
+audio_loopback_name: 扬声器 (Realtek(R) Audio)
 speech_match_threshold: 60
 fallback_points:
   reveal_answer:
@@ -102,3 +102,65 @@ exercise:
   sheet_min_y_ratio: 0.45
   confirm_after_pick: true
   cooldown_seconds: 180
+runtime_profile: fast
+runtime_profiles:
+  stable:
+    loop_interval: 0.45
+    after_click_delay: 0.55
+    ocr_scale: 1.45
+    unknown_delay: 0.45
+    page_transition_delay: 0.55
+  fast:
+    loop_interval: 0.25
+    after_click_delay: 0.35
+    ocr_scale: 1.3
+    unknown_delay: 0.3
+    page_transition_delay: 0.4
+after_click_delay: 0.55
+whisper_verify_pass: true
+speaker_foreground_click: false
+dictation_foreground_click: true
+extra_group_foreground_click: false
+dictation_vocab_replace_threshold: 92
+dictation_direct_similarity_threshold: 86
+dictation_allow_raw_consensus: true
+purchase:
+  enabled: true
+  require_license: true
+  provider: xiaoxin
+  contact: '微信或QQ: 请填写你的联系方式'
+  post_payment_note: 当前只使用易支付。付款完成后，客户端会自动按当前机器标识写入授权。
+  xiaoxin:
+    base_url: https://sylu.zhouwu.ccwu.cc
+  tiers:
+    one_time:
+      title: 一次性购买
+      price_cents: 300
+      description: 当前版本可用，使用易支付，不含后续长期更新
+      product_path: /api/oneclass/pay/buy?tier=one_time
+    lifetime_updates:
+      title: 长期更新
+      price_cents: 800
+      description: 含后续更新支持，使用易支付
+      product_path: /api/oneclass/pay/buy?tier=lifetime_updates
+    upgrade_updates:
+      title: 补差升级长期更新
+      price_cents: 600
+      description: 已购买一次性版后，补差升级到长期更新
+      product_path: /api/oneclass/pay/buy?tier=upgrade_updates
+license:
+  token: eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhdWQiOiJvbmVjbGFzcy1jbGllbnQiLCJpYXQiOjE3ODE2MTg5NTksImlzcyI6InNoZW5saXl1YW4tb25lY2xhc3MiLCJsaWNlbnNlX2lzc3VlZCI6IjIwMjYtMDYtMTZUMjI6MDk6MTkrMDg6MDAiLCJtYWNoaW5lX2lkIjoib2MtOTNiYjgzZmQ5MDJhODg0MCIsIm9yZGVyX25vIjoiT0MxNzgxNjE4OTE4OTg3NDc4NCIsInBhaWRfYXQiOiIyMDI2LTA2LTE2VDIyOjA5OjE5KzA4OjAwIiwic3ViIjoiT0MxNzgxNjE4OTE4OTg3NDc4NCIsInRpZXIiOiJvbmVfdGltZSIsInR5cCI6Im9uZWNsYXNzX2xpY2Vuc2UiLCJ1cGRhdGVzX3VudGlsIjoiMjAyNi0wNi0xNlQyMjowOToxOSswODowMCIsInVzZXJfaWQiOjJ9.Gsppe39ow9oXZhuvwEYL4s1vV6zcia2NwwSNsX9oh9wzF25zNlHwnt1tBhDqGpp0vjX06B1pyyFBKUA6DzvcCw
+  tier: one_time
+  machine_id: oc-93bb83fd902a8840
+  order_no: OC17816189189874784
+  paid_at: '2026-06-16T22:09:19+08:00'
+  updates_until: '2026-06-16T22:09:19+08:00'
+  license_issued: '2026-06-16T22:09:19+08:00'
+  activated_at: '2026-06-18T19:19:57'
+  last_notice_id: ''
+  note: 支付成功后自动激活
+_config_path: E:\AI\oneclass\wechat_word_bot_v2\wechat_word_bot\config.yaml
+audio_auto_stop: true
+audio_silence_seconds: 0.32
+audio_pre_click_delay: 0.06
+whisper_fast_logprob: -0.55

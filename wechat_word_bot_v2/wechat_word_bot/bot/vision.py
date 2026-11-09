@@ -118,13 +118,30 @@ class Vision:
         for item in items:
             if not (y_range[0] * image_height <= item.cy <= y_range[1] * image_height):
                 continue
-            word = clean_word(item.text)
+            # Validate the original token before cleaning: stripping punctuation
+            # turns phonetic labels such as 英:[arauz] into plausible words.
+            raw = unicodedata.normalize("NFKC", item.text).strip()
+            if not ENGLISH_RE.fullmatch(raw):
+                continue
+            word = clean_word(raw)
             if not ENGLISH_RE.fullmatch(word) or word in stop:
                 continue
             candidates.append((word, item))
         if not candidates:
             return None
         return max(candidates, key=lambda pair: (pair[1].height, len(pair[0]), pair[1].score))
+
+    def recover_word(
+        self, image: Image.Image, y_range: tuple[float, float],
+    ) -> tuple[str, OCRItem] | None:
+        """Retry a missing title at a larger scale, retaining screen coordinates."""
+        top = int(image.height * y_range[0])
+        bottom = int(image.height * y_range[1])
+        crop = image.crop((0, top, image.width, bottom))
+        enlarged = crop.resize((crop.width * 2, crop.height * 2), Image.Resampling.LANCZOS)
+        items = [OCRItem(i.text, i.score, i.x1 / 2, i.y1 / 2 + top,
+                         i.x2 / 2, i.y2 / 2 + top) for i in self.read(enlarged)]
+        return self.main_word(items, image.height, y_range)
 
     @staticmethod
     def definition(items: list[OCRItem], image_height: int, word_item: OCRItem | None) -> str:
