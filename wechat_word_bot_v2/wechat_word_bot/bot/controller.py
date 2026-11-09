@@ -7,7 +7,10 @@ from pathlib import Path
 
 from PIL import Image
 
+from .api_solver import VisionAPI
 from .audio_solver import AudioSolver
+from .config import speed_settings
+from .exercise import ExerciseRunner
 from .screen import Screen
 from .vision import OCRItem, Vision, chinese_similarity, clean_word, norm_text
 from .vocab import VocabStore
@@ -20,15 +23,25 @@ class WordBot:
     def __init__(self, cfg: dict, root: Path):
         self.cfg = cfg
         self.root = root
+        self.speed = speed_settings(cfg)
         self.screen = Screen(
             cfg["region"],
-            cfg.get("after_click_delay", 0.85),
+            self.speed["after_click_delay"],
             cfg.get("input_backend", "win32"),
             cfg.get("win32_fallback_to_pyautogui", True),
         )
         self.vision = Vision(cfg.get("ocr_scale", 1.6), cfg.get("ocr_min_score", 0.45))
         self.vocab = VocabStore(root / "vocab.json")
         self.audio = AudioSolver(cfg, root / "logs")
+        self.api = VisionAPI(cfg)
+        self.exercises = ExerciseRunner(cfg, self.screen, self.vision, self.api)
+        self.exercise_cfg = cfg.get("exercise") or {}
+        self.exercise_cooldown = float(
+            self.exercise_cfg.get("cooldown_seconds", 180)
+        )
+        self.exercise_until = 0.0
+        self.exercise_name = ""
+        self.stop_requested = False
         self.points = cfg.get("fallback_points", {})
         self.debug = bool(cfg.get("debug", True))
         self.unknown_count = 0
@@ -55,17 +68,56 @@ class WordBot:
             return True
         return False
 
+    def exercise_state(self, text: str) -> str | None:
+        """识别阅读类题型页面；已提交的习题详情页只等待，不做操作。"""
+        if any(word in text for word in ("习题详情", "学生得分", "答题结果")):
+            return "exercise_review"
+        if self.api.detect_task(text):
+            return "exercise"
+        return None
+
+    def handle_exercise(self, items: list[OCRItem]) -> None:
+        text = norm_text(self.vision.joined(items))
+        task = self.api.detect_task(text)
+        if not task:
+            return
+        now = time.monotonic()
+        if self.exercise_name == task and now < self.exercise_until:
+            time.sleep(1.0)
+            return
+        if not self.api.ready:
+            LOG.info(
+                "检测到阅读大题（%s），因未配置云端视觉 API，保持等待，请人工完成作答或在设置中按需配置 API Key。",
+                task,
+            )
+            self.exercise_name = task
+            self.exercise_until = now + 30.0
+            return
+        try:
+            done = self.exercises.run(task)
+        except Exception as exc:  # noqa: BLE001
+            LOG.exception("视觉 API 解题失败：%s", exc)
+            self.exercise_name = task
+            self.exercise_until = time.monotonic() + 30.0
+            return
+        self.exercise_name = task
+        self.exercise_until = time.monotonic() + (
+            self.exercise_cooldown if done else 30.0
+        )
+
     def detect_state(self, items: list[OCRItem]) -> str:
         text = norm_text(self.vision.joined(items))
         height = float(self.screen.region.height)
 
         def bottom_exact(label: str, min_ratio: float = 0.84) -> bool:
             wanted = norm_text(label)
-            return any(
-                norm_text(item.text) == wanted
-                and item.cy >= height * min_ratio
-                for item in items
-            )
+            for item in items:
+                if item.cy < height * min_ratio:
+                    continue
+                t = norm_text(item.text)
+                if t == wanted or (wanted in t and len(t) <= len(wanted) + 2):
+                    return True
+            return False
 
         # 弹窗中和页面底部可能同时出现“再来一组”，优先识别弹窗。
         if (
@@ -76,6 +128,10 @@ class WordBot:
             )
         ):
             return "task_timeout"
+
+        exercise = self.exercise_state(text)
+        if exercise:
+            return exercise
 
         if "学习完成" in text:
             return "learn_complete"
@@ -239,8 +295,8 @@ class WordBot:
 
         # 默认共听两次：第一次识别置信度不足或录音异常时，
         # 再点击一次喇叭重新录音和识别。次数可在 config.yaml 中修改。
-        max_attempts = max(1, int(self.cfg.get("dictation_max_attempts", 2)))
-        retry_delay = max(0.0, float(self.cfg.get("dictation_retry_delay", 0.65)))
+        max_attempts = int(self.speed["max_attempts"])
+        retry_delay = max(0.0, float(self.speed["retry_delay"]))
         threshold = float(self.cfg.get("speech_match_threshold", 52))
         speaker = self.point("speaker")
         last_error: Exception | None = None
@@ -517,6 +573,11 @@ class WordBot:
             ):
                 LOG.info("检测到测试完成，但没有找到结束按钮，停止运行。")
                 raise SystemExit(0)
+        elif state == "exercise":
+            self.handle_exercise(items)
+        elif state == "exercise_review":
+            LOG.info("习题详情页已提交，保持不动。")
+            time.sleep(1.0)
         else:
             self.handle_unknown(image, items)
 
@@ -532,7 +593,7 @@ class WordBot:
 
     def run(self) -> None:
         LOG.info("机器人启动。win32 模式不会移动鼠标；按 Ctrl+C 可退出。PyAutoGUI 模式仍可用左上角紧急停止。")
-        while True:
+        while not self.stop_requested:
             image = self.screen.capture()
             items = self.vision.read(image)
             state = self.detect_state(items)
@@ -543,3 +604,7 @@ class WordBot:
                 self.unknown_count = 0
             self.act(state, items, image)
             time.sleep(float(self.cfg.get("loop_interval", 0.65)))
+
+    def stop(self) -> None:
+        LOG.info("收到停止请求，当前循环结束后退出。")
+        self.stop_requested = True

@@ -20,6 +20,7 @@ class VocabStore:
                 self.data = {}
 
     def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(
             json.dumps(dict(sorted(self.data.items())), ensure_ascii=False, indent=2),
             encoding="utf-8",

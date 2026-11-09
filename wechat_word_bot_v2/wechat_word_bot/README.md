@@ -43,6 +43,19 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
+## 一键启动
+
+双击工程目录下的 `启动.bat`，即可打开图形设置与运行界面：
+- **模型厂商快速切换**：预置阿里云百炼（通义千问）、硅基流动（SiliconFlow）、OpenAI、智谱 AI（GLM）、月之暗面（Kimi）、DeepSeek、Ollama 及自定义，自动填入 Base URL；
+- **API 探测与动态拉取**：填写 API Key 后，点击「🔍 测试连接并拉取模型列表」，自动向服务商 `/models` 接口查询并填充最新可用模型，带视觉标记的模型自动置顶；
+- **答题速度三档切换**：快 / 均衡 / 准；
+- **听写引擎二选一**：本地 Whisper（离线 CPU）或服务端语音 API（GPU 加速）；
+- **右侧实时监控**：显示运行与识别日志，支持一键启停。
+
+首次运行会自动创建 `.venv` 并安装全部依赖（含听写音频组件）。纯命令行运行：`.\启动.bat cli`。
+
+仍需先完成下方「校准」，并保持微信窗口位置、大小不变。
+
 ## 校准
 
 ```powershell

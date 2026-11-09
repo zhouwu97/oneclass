@@ -10,11 +10,9 @@ import sys
 from pathlib import Path
 
 from bot.config import ROOT, load_config
-from bot.purchase import ensure_license_or_exit, exit_if_purchase_command
 
 
 def main() -> None:
-    exit_if_purchase_command(sys.argv)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(message)s",
@@ -30,8 +28,6 @@ def main() -> None:
         f"，检测缩放约 {scale}%" if scale else "",
     )
     cfg = load_config()
-    if not ensure_license_or_exit(cfg):
-        raise SystemExit(1)
     from bot.controller import WordBot
 
     bot = WordBot(cfg, Path(ROOT))

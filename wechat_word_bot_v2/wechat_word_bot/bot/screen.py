@@ -70,9 +70,10 @@ class Win32BackgroundInput:
 
     def _target_at(self, screen_x: int, screen_y: int) -> tuple[int, int, int]:
         point = POINT(int(screen_x), int(screen_y))
-        hwnd = int(self.user32.WindowFromPoint(point))
-        if not hwnd:
+        raw_hwnd = self.user32.WindowFromPoint(point)
+        if not raw_hwnd:
             raise RuntimeError(f"坐标 ({screen_x}, {screen_y}) 下没有可用窗口")
+        hwnd = int(raw_hwnd)
         client = POINT(int(screen_x), int(screen_y))
         if not self.user32.ScreenToClient(hwnd, ctypes.byref(client)):
             raise ctypes.WinError()
@@ -266,6 +267,39 @@ class Screen:
                     pyperclip.copy(old_clipboard)
                 except Exception:  # noqa: BLE001
                     pass
+            self._restore_user_state(old_pos, old_hwnd)
+
+    def foreground_scroll_pages(
+        self,
+        pages: int,
+        anchor: tuple[float, float] | None = None,
+        delay: float = 0.45,
+    ) -> None:
+        """用 PageDown/PageUp 翻动 WebView 正文，随后恢复鼠标和前台窗口。
+
+        后台 WM_MOUSEWHEEL 对该小程序无效，真实滚轮每次只有几十像素，
+        因此使用锚点单击后连按翻页键的方式滚动。
+        """
+        screen_x, screen_y = (
+            self.relative(*anchor) if anchor else self.relative(0.5, 0.30)
+        )
+        key = "pagedown" if pages >= 0 else "pageup"
+        total = abs(int(pages))
+        old_pos = pyautogui.position()
+        old_hwnd = None
+        if hasattr(ctypes, "windll"):
+            try:
+                old_hwnd = int(ctypes.windll.user32.GetForegroundWindow())
+            except Exception:  # noqa: BLE001
+                old_hwnd = None
+        try:
+            if total:
+                pyautogui.click(screen_x, screen_y)
+                time.sleep(0.35)
+            for _ in range(total):
+                pyautogui.press(key)
+                time.sleep(delay)
+        finally:
             self._restore_user_state(old_pos, old_hwnd)
 
     def save_debug(self, image: Image.Image, folder: Path, name: str) -> Path:

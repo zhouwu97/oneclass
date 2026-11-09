@@ -6,7 +6,6 @@ region:
 input_backend: win32
 win32_fallback_to_pyautogui: false
 loop_interval: 0.65
-after_click_delay: 0.85
 ocr_scale: 1.6
 ocr_min_score: 0.45
 debug: true
@@ -17,12 +16,15 @@ auto_next_group: true
 max_extra_groups: 0
 unknown_choice_strategy: unknown
 choice_match_threshold: 42
-whisper_model: small.en
+speed_preset: balanced
+asr_backend: local
+asr_api_model: whisper-1
+whisper_model: distil-large-v3
 whisper_device: cpu
 whisper_compute_type: int8
+whisper_vad: true
 audio_sample_rate: 48000
-audio_record_seconds: 3.2
-audio_loopback_name: 扬声器 (Realtek(R) Audio)
+audio_loopback_name: ''
 speech_match_threshold: 60
 fallback_points:
   reveal_answer:
@@ -69,42 +71,34 @@ fallback_points:
   - 0.958
 dictation_failure_strategy: dummy
 dictation_fallback_word: zzzz
-dictation_max_attempts: 2
-dictation_retry_delay: 0.65
 extra_group_retry_seconds: 3.0
-purchase:
+api:
   enabled: true
-  require_license: true
-  provider: xiaoxin
-  contact: '微信或QQ: 请填写你的联系方式'
-  post_payment_note: '当前只使用易支付。付款完成后，客户端会自动按当前机器标识写入授权。'
-  xiaoxin:
-    base_url: 'https://sylu.zhouwu.ccwu.cc'
-  pending_order: {}
-  tiers:
-    one_time:
-      title: 一次性购买
-      price_cents: 300
-      description: 当前版本可用，使用易支付，不含后续长期更新
-      product_path: '/api/oneclass/pay/buy?tier=one_time'
-    lifetime_updates:
-      title: 长期更新
-      price_cents: 800
-      description: 含后续更新支持，使用易支付
-      product_path: '/api/oneclass/pay/buy?tier=lifetime_updates'
-    upgrade_updates:
-      title: 补差升级长期更新
-      price_cents: 600
-      description: 已购买一次性版后，补差升级到长期更新
-      product_path: '/api/oneclass/pay/buy?tier=upgrade_updates'
-license:
-  token: ''
-  tier: ''
-  machine_id: ''
-  order_no: ''
-  paid_at: ''
-  updates_until:
-  license_issued: ''
-  activated_at: ''
-  last_notice_id: ''
-  note: ''
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  model: qwen-vl-max-latest
+  api_key: ''
+  api_key_env: ONECLASS_API_KEY
+  timeout: 90
+  max_tokens: 3000
+  temperature: 0.0
+  max_image_width: 900
+  jpeg_quality: 82
+  max_frames: 8
+  retry: 2
+  task_keywords:
+    paragraph_match: 段落匹配
+    word_bank_fill: 选词填空
+    reading_choice: 仔细阅读
+exercise:
+  auto_submit: false
+  scroll_pages: 6
+  scroll_anchor:
+  - 0.5
+  - 0.3
+  blank_y_range:
+  - 0.08
+  - 0.88
+  sheet_delay: 0.8
+  sheet_min_y_ratio: 0.45
+  confirm_after_pick: true
+  cooldown_seconds: 180
